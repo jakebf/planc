@@ -1,0 +1,4 @@
+planc
+dist/
+*.prof
+*.test

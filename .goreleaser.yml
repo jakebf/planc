@@ -1,0 +1,38 @@
+version: 2
+
+builds:
+  - main: .
+    binary: planc
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+release:
+  mode: replace
+  replace_existing_artifacts: true
+  header: |
+    ## Release Notes
+
+    {{ readFile "CHANGELOG.md" }}
+  extra_files:
+    - glob: CHANGELOG.md
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"

@@ -1,0 +1,6 @@
+{
+  "plans_dir": "~/.claude/plans",
+  "primary": ["claude", "{file}"],
+  "editor": ["nvim", "{file}"],
+  "sort": "created"
+}
