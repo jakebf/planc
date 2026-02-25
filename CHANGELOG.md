@@ -2,6 +2,15 @@
 
 All notable changes to `planc` are documented in this file.
 
+## [v0.2.1] - 2026-02-25
+
+### Fixed
+- ToC pane scroll windowing miscounted header lines and didn't reserve space for ↑/↓ overflow indicators, causing entries to be clipped or hidden.
+- Entering/exiting comment mode now recalculates layout (previously only happened on terminal resize).
+
+### Changed
+- Setup wizard (`--setup`) now shows descriptive hints for each field, clearer field names ("Additional plans" instead of "Project plans"), and a `"none"` option to clear the project plans glob.
+
 ## [v0.2.0] - 2026-02-24
 
 ### Added

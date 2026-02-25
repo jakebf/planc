@@ -537,6 +537,30 @@ func (m model) previewW() int {
 	return pw - 2
 }
 
+// applyLayout recalculates and applies list/viewport sizes from the current
+// terminal dimensions and comment-mode state. Called on resize and when
+// entering/exiting comment mode.
+func (m *model) applyLayout() {
+	listW, _ := m.layoutWidths()
+	innerListW := listW - 2
+	innerPreviewW := m.previewW()
+	innerH := m.height - 3 // -2 for borders, -1 for hint bar
+
+	if innerListW < 10 {
+		innerListW = 10
+	}
+	if innerPreviewW < 10 {
+		innerPreviewW = 10
+	}
+	if innerH < 5 {
+		innerH = 5
+	}
+
+	m.list.SetSize(innerListW, innerH-1)
+	m.viewport.Width = innerPreviewW
+	m.viewport.Height = innerH - 1
+}
+
 // renderWindow renders the selected plan plus a few neighbors (±2) if not cached.
 // The selected plan gets its own goroutine for fast first paint; neighbors render
 // in parallel so they're warm by the time the user navigates to them.
@@ -989,6 +1013,7 @@ func (m model) handleCommentKey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		m.comment.active = false
 		m.comment.toc = nil
 		delete(m.previewCache, m.comment.planFile)
+		m.applyLayout()
 		return m, m.renderWindow(), true
 
 	// Pane switching
@@ -1296,6 +1321,7 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			m.comment.cursor = 0
 			m.comment.editing = false
 			m.focused = listPane // ToC pane
+			m.applyLayout()
 			return m, m.cmdLoadComment(item.path()), true
 		}
 	}
@@ -1633,27 +1659,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.ready = true
 
-		listW, _ := m.layoutWidths()
-		innerListW := listW - 2
-		innerPreviewW := m.previewW()
-		innerH := m.height - 3 // -2 for borders, -1 for hint bar
-
-		if innerListW < 10 {
-			innerListW = 10
-		}
-		if innerPreviewW < 10 {
-			innerPreviewW = 10
-		}
-		if innerH < 5 {
-			innerH = 5
-		}
-
-		m.list.SetSize(innerListW, innerH-1)
-		m.viewport.Width = innerPreviewW
-		m.viewport.Height = innerH - 1
+		m.applyLayout()
 		m.restoreTitle()
 		m.refreshReleaseNotesView()
 
+		innerPreviewW := m.previewW()
 		if !m.prerendered || m.previewWidth != innerPreviewW {
 			m.prerendered = true
 			m.previewWidth = innerPreviewW

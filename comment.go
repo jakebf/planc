@@ -447,7 +447,7 @@ func renderTocPane(m model, width, height int) string {
 	}
 
 	// Scroll windowing — only show indicators when list actually overflows
-	headerLines := 2 // status/labels header + blank line
+	headerLines := 3 // status/labels line + 2 trailing newlines
 	maxVisible := height - headerLines
 	if maxVisible < 1 {
 		maxVisible = 1
@@ -455,6 +455,10 @@ func renderTocPane(m model, width, height int) string {
 
 	scrollOff := 0
 	if len(lines) > maxVisible {
+		maxVisible -= 2 // reserve rows for ↑/↓ more indicators
+		if maxVisible < 1 {
+			maxVisible = 1
+		}
 		scrollOff = m.comment.cursor - maxVisible/2
 		if scrollOff < 0 {
 			scrollOff = 0

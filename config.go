@@ -231,7 +231,6 @@ func runSetup(path string, current config, scanner *bufio.Scanner) config {
 
 	fmt.Println(promptStyle.Render("  planc setup"))
 	fmt.Println(dimStyle.Render("  Press enter to keep the current value."))
-	fmt.Println(dimStyle.Render("  The plan file path is passed as the last argument."))
 	fmt.Println()
 
 	prompt := func(label, defVal string) string {
@@ -246,25 +245,46 @@ func runSetup(path string, current config, scanner *bufio.Scanner) config {
 
 	cfg := current
 
+	// Agent plans path
+	fmt.Println(dimStyle.Render("  Primary directory to scan for .md plan files."))
 	cfg.PlansDir = expandHome(prompt("Agent plans path        ", current.PlansDir))
+	fmt.Println()
 
-	// Project plans glob: show suggestion hint but default to empty
+	// Additional plans glob
+	fmt.Println(dimStyle.Render("  Scan additional directories for plans, e.g. per-project plans/"))
+	fmt.Println(dimStyle.Render("  folders. Use ** to match across projects: ~/code/**/plans"))
 	projectDefault := current.ProjectPlanGlob
 	if projectDefault == "" {
-		fmt.Printf("%s %s: ", promptStyle.Render("Project plans (glob)    "), dimStyle.Render("[]")+" "+dimStyle.Render("e.g. ~/code/**/plans"))
+		fmt.Printf("%s %s: ", promptStyle.Render("Additional plans (glob) "), dimStyle.Render("[]"))
 	} else {
-		fmt.Printf("%s %s: ", promptStyle.Render("Project plans (glob)    "), dimStyle.Render("["+projectDefault+"]"))
+		fmt.Printf("%s %s: ", promptStyle.Render("Additional plans (glob) "), dimStyle.Render("["+projectDefault+"]")+" "+dimStyle.Render(`"none" to clear`))
 	}
 	if scanner.Scan() {
-		if line := strings.TrimSpace(scanner.Text()); line != "" {
-			cfg.ProjectPlanGlob = line
-		} else {
+		line := strings.TrimSpace(scanner.Text())
+		switch {
+		case line == "":
 			cfg.ProjectPlanGlob = projectDefault
+		case strings.EqualFold(line, "none"):
+			cfg.ProjectPlanGlob = ""
+		default:
+			cfg.ProjectPlanGlob = line
 		}
 	}
+	fmt.Println()
 
-	cfg.Editor = splitShellWords(prompt("Editor command  (e)     ", strings.Join(current.Editor, " ")))
-	cfg.Primary = splitShellWords(prompt("Coding agent    (c)     ", strings.Join(current.Primary, " ")))
+	// Editor command
+	fmt.Println(dimStyle.Render("  Command to open a plan for editing (e key)."))
+	cfg.Editor = splitShellWords(prompt("Editor command          ", strings.Join(current.Editor, " ")))
+	fmt.Println()
+
+	// Coding agent command
+	fmt.Println(dimStyle.Render("  Command to send a plan to your coding agent (c key)."))
+	fmt.Println(dimStyle.Render("  The plan path is appended as the last argument."))
+	cfg.Primary = splitShellWords(prompt("Coding agent command    ", strings.Join(current.Primary, " ")))
+	fmt.Println()
+
+	// Prompt prefix
+	fmt.Println(dimStyle.Render("  Text prepended to the plan path when passed to the coding agent."))
 	cfg.PromptPrefix = prompt("Prompt prefix           ", current.PromptPrefix)
 	fmt.Println()
 
