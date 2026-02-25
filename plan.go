@@ -19,9 +19,9 @@ import (
 type planStore interface {
 	setStatus(p plan, status string) tea.Cmd
 	deletePlan(p plan) tea.Cmd
-	setProject(p plan, project string) tea.Cmd
+	setLabels(p plan, labels []string) tea.Cmd
 	batchSetStatus(files []string, status string) tea.Cmd
-	batchSetProject(files []string, project string) tea.Cmd
+	batchUpdateLabels(files []string, add []string, remove []string) tea.Cmd
 }
 
 type pane int
@@ -33,7 +33,8 @@ const (
 
 type plan struct {
 	status   string    // from frontmatter, or "" (unset)
-	project  string    // from frontmatter, or ""
+	project  string    // from frontmatter, or "" (deprecated; use labels)
+	labels   []string  // from frontmatter, or migrated from project
 	title    string    // from first # heading
 	created  time.Time // file birth time
 	modified time.Time // file modification time
@@ -45,13 +46,6 @@ var nextStatus = map[string]string{
 	"pending": "active",
 	"active":  "done",
 	"done":    "pending",
-}
-
-var prevStatus = map[string]string{
-	"":        "done",
-	"pending": "done",
-	"active":  "pending",
-	"done":    "active",
 }
 
 func statusIcon(s string) string {
@@ -68,8 +62,8 @@ func statusIcon(s string) string {
 }
 
 func (p plan) Title() string {
-	if p.project != "" {
-		return fmt.Sprintf("%s %s: %s", statusIcon(p.status), p.project, p.title)
+	if len(p.labels) > 0 {
+		return fmt.Sprintf("%s %s: %s", statusIcon(p.status), strings.Join(p.labels, ","), p.title)
 	}
 	return fmt.Sprintf("%s %s", statusIcon(p.status), p.title)
 }
@@ -79,7 +73,7 @@ func (p plan) Description() string {
 }
 
 func (p plan) FilterValue() string {
-	return fmt.Sprintf("%s %s %s %s", p.status, p.project, p.title, p.file)
+	return fmt.Sprintf("%s %s %s %s", p.status, strings.Join(p.labels, " "), p.title, p.file)
 }
 
 // ─── Plan Scanning ───────────────────────────────────────────────────────────
@@ -163,9 +157,16 @@ func scanPlans(dir string) ([]plan, error) {
 		if title == "" {
 			title = strings.TrimSuffix(e.Name(), ".md")
 		}
+		labels := parseLabels(fm["labels"])
+		project := fm["project"]
+		// Backward compat: migrate project → labels
+		if len(labels) == 0 && project != "" {
+			labels = []string{project}
+		}
 		plans = append(plans, plan{
 			status:   fm["status"],
-			project:  fm["project"],
+			project:  project,
+			labels:   labels,
 			title:    title,
 			created:  fileCreatedTime(path, info.ModTime()),
 			modified: info.ModTime(),
@@ -180,6 +181,30 @@ func sortPlans(plans []plan) {
 	sort.Slice(plans, func(i, j int) bool {
 		return plans[i].created.After(plans[j].created)
 	})
+}
+
+// parseLabels splits a comma-separated labels string, normalizes to lowercase,
+// and returns them sorted alphabetically.
+func parseLabels(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	var labels []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		p = strings.ToLower(p)
+		if p != "" {
+			labels = append(labels, p)
+		}
+	}
+	sort.Strings(labels)
+	return labels
+}
+
+// labelsString joins labels with ", " for frontmatter serialization.
+func labelsString(labels []string) string {
+	return strings.Join(labels, ", ")
 }
 
 // setFrontmatter merges the given fields into the file's YAML frontmatter.
@@ -208,7 +233,7 @@ func setFrontmatter(filePath string, updates map[string]string) error {
 		var buf strings.Builder
 		buf.WriteString("---\n")
 		written := make(map[string]bool)
-		for _, key := range []string{"status", "project"} {
+		for _, key := range []string{"status", "labels", "project"} {
 			if v, ok := existing[key]; ok && v != "" {
 				fmt.Fprintf(&buf, "%s: %s\n", key, v)
 				written[key] = true
@@ -239,21 +264,21 @@ func setFrontmatter(filePath string, updates map[string]string) error {
 	return os.WriteFile(filePath, []byte(result), perm)
 }
 
-// recentProjects returns deduplicated project names from plans, most frequent first.
-func recentProjects(plans []plan) []string {
+// recentLabels returns deduplicated label names from plans, most frequent first.
+func recentLabels(plans []plan) []string {
 	counts := make(map[string]int)
 	for _, p := range plans {
-		if p.project != "" {
-			counts[p.project]++
+		for _, l := range p.labels {
+			counts[l]++
 		}
 	}
-	type pc struct {
+	type lc struct {
 		name  string
 		count int
 	}
-	var sorted []pc
+	var sorted []lc
 	for k, v := range counts {
-		sorted = append(sorted, pc{k, v})
+		sorted = append(sorted, lc{k, v})
 	}
 	sort.Slice(sorted, func(i, j int) bool {
 		if sorted[i].count != sorted[j].count {
@@ -268,10 +293,10 @@ func recentProjects(plans []plan) []string {
 	return result
 }
 
-func filterPlans(plans []plan, showDone bool, keepFiles map[string]bool, projectFilter string, installed time.Time) []plan {
+func filterPlans(plans []plan, showDone bool, keepFiles map[string]bool, labelFilter string, installed time.Time) []plan {
 	var filtered []plan
 	for _, p := range plans {
-		if projectFilter != "" && p.project != projectFilter {
+		if labelFilter != "" && !hasLabel(p.labels, labelFilter) {
 			continue
 		}
 		if !showDone && p.status == "done" && !keepFiles[p.file] {
@@ -286,6 +311,15 @@ func filterPlans(plans []plan, showDone bool, keepFiles map[string]bool, project
 		filtered = append(filtered, p)
 	}
 	return filtered
+}
+
+func hasLabel(labels []string, target string) bool {
+	for _, l := range labels {
+		if l == target {
+			return true
+		}
+	}
+	return false
 }
 
 func plansToItems(plans []plan) []list.Item {

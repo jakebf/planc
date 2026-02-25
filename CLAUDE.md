@@ -34,7 +34,7 @@ Bubble Tea TUI with Model → Update → View cycle. Single package:
 
 ### Plan pipeline
 
-`scanPlans(dir)` reads `.md` files → `parseFrontmatter()` extracts optional YAML (`status`, `project`) → `parseHeader()` gets first `#` heading as title → sorted by creation time descending. Frontmatter is lazy: only written when the user takes action (`s` to cycle status, `p` to set project). Plans with no user action have no frontmatter.
+`scanPlans(dir)` reads `.md` files → `parseFrontmatter()` extracts optional YAML (`status`, `labels`) → `parseHeader()` gets first `#` heading as title → sorted by creation time descending. Frontmatter is lazy: only written when the user takes action (`s` to set status, `l` to add labels). Plans with no user action have no frontmatter. Legacy `project` fields are migrated to `labels` on write.
 
 ### Async rendering
 
@@ -45,5 +45,5 @@ All disk/glamour work runs as `tea.Cmd` functions returning typed messages (`pla
 - **Frontmatter writes**: `setFrontmatter()` uses `os.WriteFile` (not atomic rename) to preserve file birth time for created-sort order
 - **File watcher**: fsnotify on the plans dir with 100ms debounce; skipped during demo mode
 - **Undo**: 3-second window after status change (`undoExpiredMsg` timer)
-- **Batch ops**: `x` to select, then `s`/`0-3`/`p` to bulk update; selection cleared after
+- **Batch ops**: `x` to select, then `s`/`0-3`/`l` to bulk update; selection cleared after
 - **Shell commands**: Runs through `$SHELL -ic` for alias/rc loading; `{file}` placeholders are expanded and, if missing, the plan path is appended as the final argument

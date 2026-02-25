@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,19 +26,19 @@ import (
 type keyMap struct {
 	Navigate    key.Binding
 	SwitchPane  key.Binding
+	OpenStatus  key.Binding
 	CycleStatus key.Binding
-	RevStatus   key.Binding
 	SetStatus   key.Binding // 0-3 direct status set (display-only binding)
 	Undo        key.Binding
 	ToggleDone  key.Binding
-	Project     key.Binding
+	Labels      key.Binding
 	Delete      key.Binding
 	Primary     key.Binding
 	Editor      key.Binding
 	Filter      key.Binding
 	CopyFile    key.Binding
-	PrevProject key.Binding
-	NextProject key.Binding
+	PrevLabel key.Binding
+	NextLabel key.Binding
 	Select      key.Binding
 	SelectAll   key.Binding
 	ScrollDown  key.Binding
@@ -53,19 +54,19 @@ func newKeyMap(cfg config) keyMap {
 	return keyMap{
 		Navigate:    key.NewBinding(key.WithKeys("j", "k"), key.WithHelp("j/k", "navigate / scroll")),
 		SwitchPane:  key.NewBinding(key.WithKeys("tab", "shift+tab"), key.WithHelp("tab", "switch pane")),
-		CycleStatus: key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "next status")),
-		RevStatus:   key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "reverse status")),
+		OpenStatus:  key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "status")),
+		CycleStatus: key.NewBinding(key.WithKeys("~"), key.WithHelp("~", "cycle status")),
 		SetStatus:   key.NewBinding(key.WithKeys("0", "1", "2", "3"), key.WithHelp("0-3", "set status")),
 		Undo:        key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "undo status")),
 		ToggleDone:  key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "toggle done plans")),
-		Project:     key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "set project")),
+		Labels:      key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "labels")),
 		Delete:      key.NewBinding(key.WithKeys("#"), key.WithHelp("#", "delete plan")),
-		Primary:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", commandLabel(cfg.Primary))),
-		Editor:      key.NewBinding(key.WithKeys("e"), key.WithHelp("e", commandLabel(cfg.Editor))),
+		Primary:     key.NewBinding(key.WithKeys("c"), key.WithHelp("c", commandLabel(cfg.Primary))),
+		Editor:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", commandLabel(cfg.Editor))),
 		Filter:      key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
-		CopyFile:    key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy path")),
-		PrevProject: key.NewBinding(key.WithKeys("["), key.WithHelp("[/]", "cycle project filter")),
-		NextProject: key.NewBinding(key.WithKeys("]")),
+		CopyFile:    key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "copy path")),
+		PrevLabel: key.NewBinding(key.WithKeys("["), key.WithHelp("[/]", "cycle label filter")),
+		NextLabel: key.NewBinding(key.WithKeys("]")),
 		Select:      key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "select")),
 		SelectAll:   key.NewBinding(key.WithKeys("a")),
 		ScrollDown:  key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "page down")),
@@ -79,15 +80,15 @@ func newKeyMap(cfg config) keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Primary, k.Editor, k.CycleStatus, k.Project, k.Select, k.Filter, k.Help}
+	return []key.Binding{k.Editor, k.Primary, k.CopyFile, k.OpenStatus, k.Labels, k.Select, k.Filter, k.Help}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		// Actions
-		{k.Primary, k.Editor, k.CopyFile, k.CycleStatus, k.RevStatus, k.SetStatus, k.Undo, k.Project, k.PrevProject, k.Select, k.Delete},
-		// Navigation / app
-		{k.Navigate, k.SwitchPane, k.ScrollDown, k.ScrollUp, k.Filter, k.ToggleDone, k.Help, k.Settings, k.Quit},
+		// Essentials
+		{k.Editor, k.Primary, k.CopyFile, k.OpenStatus, k.Labels, k.Select, k.ToggleDone, k.Filter, k.PrevLabel},
+		// Power user
+		{k.Navigate, k.SwitchPane, k.ScrollDown, k.ScrollUp, k.CycleStatus, k.SetStatus, k.Undo, k.Delete, k.Settings, k.Quit},
 	}
 }
 
@@ -140,7 +141,7 @@ type model struct {
 	store         planStore
 	watcher       *fsnotify.Watcher
 	showDone      bool
-	projectFilter string
+	labelFilter string
 
 	// Cursor and selection
 	prevIndex    int             // tracks cursor changes to trigger preview updates
@@ -151,11 +152,33 @@ type model struct {
 
 	// Modals and transient state
 	confirmDelete    bool
-	settingProject   bool
-	projectInput     textinput.Model
-	projectChoices   []string
 	lastStatusChange *statusUpdatedMsg // non-nil during undo window
 	batchKeepFiles   []string          // keeps batch-affected items visible until linger expires
+
+	// Label modal
+	settingLabels  bool
+	labelInput     textinput.Model
+	labelChoices   []string        // all known labels
+	labelToggled   map[string]bool // tracks which labels are toggled (on = all have it)
+	labelMixed     map[string]bool // tracks mixed state in batch mode (some but not all)
+	labelCursor    int
+	labelBatchMode bool            // true when multiple plans selected
+	labelDirty     bool            // true when user has toggled/added a label
+	labelFlashIdx  int             // index flashing after enter toggle (-1 = none)
+	labelFlashTick int             // remaining flash ticks
+
+	// Inline feedback
+	undoFiles      map[string]string // filename → new status (shown inline on plan row during undo window)
+	copiedFiles    map[string]bool   // filenames with "Copied!" inline indicator
+	copiedID       int               // generation counter for copied clear timer
+	notification   string            // right-aligned notification on hint bar
+	notificationID int               // generation counter for notification clear timer
+	undoID         int               // generation counter for undo expiration
+	batchLingerID  int               // generation counter for batch linger expiration
+
+	// Status modal
+	settingStatus     bool
+	statusModalCursor int
 
 	// Sub-states
 	clod            clodState
@@ -177,21 +200,23 @@ func (m model) visiblePlans() []plan {
 		// Use a fake installed time so unset-status plans with recent
 		// modified times are visible, just like in real usage.
 		fakeInstalled := time.Now().Add(-48 * time.Hour)
-		return filterPlans(m.demo.plans, m.showDone, m.keepFiles(), m.projectFilter, fakeInstalled)
+		return filterPlans(m.demo.plans, m.showDone, m.keepFiles(), m.labelFilter, fakeInstalled)
 	}
-	return filterPlans(m.allPlans, m.showDone, m.keepFiles(), m.projectFilter, m.installed)
+	return filterPlans(m.allPlans, m.showDone, m.keepFiles(), m.labelFilter, m.installed)
 }
 
 func newModel(plans []plan, dir string, cfg config, watcher *fsnotify.Watcher) model {
 	sel := make(map[string]bool)
 	chg := make(map[string]bool)
+	uf := make(map[string]string)
+	cf := make(map[string]bool)
 	var installed time.Time
 	if cfg.Installed != "" {
 		installed, _ = time.Parse(time.RFC3339, cfg.Installed)
 	}
 	sortPlans(plans)
 	var spinView string
-	delegate := planDelegate{selected: sel, changed: chg, spinnerView: &spinView}
+	delegate := planDelegate{selected: sel, changed: chg, undoFiles: uf, copiedFiles: cf, spinnerView: &spinView}
 	visible := filterPlans(plans, cfg.ShowAll, nil, "", installed)
 	l := list.New(plansToItems(visible), delegate, 0, 0)
 	l.Title = "Planc Active · All"
@@ -217,10 +242,10 @@ func newModel(plans []plan, dir string, cfg config, watcher *fsnotify.Watcher) m
 	s.Spinner = spinner.Pulse
 	s.Style = lipgloss.NewStyle().Foreground(colorAccent)
 
-	ti := textinput.New()
-	ti.Prompt = ""
-	ti.CharLimit = 50
-	ti.Width = 30
+	li := textinput.New()
+	li.Prompt = ""
+	li.CharLimit = 50
+	li.Width = 30
 	rnvp := viewport.New(0, 0)
 
 	style := "dark"
@@ -238,6 +263,8 @@ func newModel(plans []plan, dir string, cfg config, watcher *fsnotify.Watcher) m
 		previewCache:    make(map[string]string),
 		changedFiles:    chg,
 		changedSpinView: &spinView,
+		undoFiles:       uf,
+		copiedFiles:     cf,
 		watcher:         watcher,
 		allPlans:        plans,
 		showDone:        cfg.ShowAll,
@@ -248,7 +275,7 @@ func newModel(plans []plan, dir string, cfg config, watcher *fsnotify.Watcher) m
 		store:           diskStore{dir: dir},
 		glamourStyle:    style,
 		status:          statusBarState{spinner: s},
-		projectInput:    ti,
+		labelInput:      li,
 		releaseNotes:    releaseNotesState{viewport: rnvp},
 	}
 }
@@ -303,6 +330,19 @@ func (m *model) clearStatus() {
 	m.status.text = ""
 }
 
+// setNotification shows a right-aligned notification on the hint bar that auto-clears.
+func (m *model) setNotification(text string, duration time.Duration) tea.Cmd {
+	m.notificationID++
+	m.notification = text
+	id := m.notificationID
+	if duration > 0 {
+		return tea.Tick(duration, func(time.Time) tea.Msg {
+			return notificationClearMsg{id: id}
+		})
+	}
+	return nil
+}
+
 // updateHelpKeys refreshes the toggle-done help text to reflect current state.
 func (m *model) updateHelpKeys() {
 	if m.showDone {
@@ -337,8 +377,8 @@ func (m *model) restoreTitle() {
 			}
 		}
 	}
-	if m.projectFilter != "" {
-		left += " " + projectColor(m.projectFilter).Render(m.projectFilter)
+	if m.labelFilter != "" {
+		left += " " + labelColor(m.labelFilter).Render(m.labelFilter)
 	}
 	if m.list.IsFiltered() {
 		filterText := m.list.FilterValue()
@@ -388,27 +428,16 @@ func (m model) cmdDelete(p plan) tea.Cmd {
 	return m.store.deletePlan(p)
 }
 
-func (m model) cmdSetProject(p plan, project string) tea.Cmd {
-	return m.store.setProject(p, project)
+func (m model) cmdSetLabels(p plan, labels []string) tea.Cmd {
+	return m.store.setLabels(p, labels)
 }
 
 func (m model) cmdBatchSetStatus(files []string, status string) tea.Cmd {
 	return m.store.batchSetStatus(files, status)
 }
 
-func (m model) cmdBatchSetProject(files []string, project string) tea.Cmd {
-	return m.store.batchSetProject(files, project)
-}
-
-func (m model) applyProject(proj string) tea.Cmd {
-	if len(m.selected) > 0 {
-		files := m.selectedFiles()
-		return m.cmdBatchSetProject(files, proj)
-	}
-	if item, ok := m.list.SelectedItem().(plan); ok {
-		return m.cmdSetProject(item, proj)
-	}
-	return nil
+func (m model) cmdBatchUpdateLabels(files []string, add []string, remove []string) tea.Cmd {
+	return m.store.batchUpdateLabels(files, add, remove)
 }
 
 // pruneSelection removes selected files that are no longer in the visible list.
@@ -492,18 +521,21 @@ func (m model) handleDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y":
 		if item, ok := m.list.SelectedItem().(plan); ok {
 			m.confirmDelete = false
-			m.clearStatus()
-			return m, m.cmdDelete(item)
+			m.notification = ""
+			return m, tea.Batch(
+				m.cmdDelete(item),
+				m.setNotification("Deleted: "+item.file, 3*time.Second),
+			)
 		}
 	case "n", "esc":
 		m.confirmDelete = false
-		m.clearStatus()
+		m.notification = ""
 		return m, nil
 	}
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		m.confirmDelete = false
-		m.clearStatus()
+		m.notification = ""
 		return m, nil
 	case key.Matches(msg, m.keys.ForceQuit):
 		return m, tea.Quit
@@ -511,45 +543,282 @@ func (m model) handleDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) handleProjectInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// statusOptions maps cursor index to status values for the status modal.
+var statusOptions = []struct {
+	key    string
+	icon   string
+	label  string
+	status string
+}{
+	{"0", "·", "unset", ""},
+	{"1", "○", "pending", "pending"},
+	{"2", "●", "active", "active"},
+	{"3", "✓", "done", "done"},
+}
+
+func statusCursorForStatus(s string) int {
+	for i, opt := range statusOptions {
+		if opt.status == s {
+			return i
+		}
+	}
+	return 0
+}
+
+func (m model) handleStatusModal(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	switch {
 	case key.Matches(msg, m.keys.ForceQuit):
-		return m, tea.Quit
+		return m, tea.Quit, true
 	case msg.Type == tea.KeyEsc:
-		m.settingProject = false
-		return m, nil
+		m.settingStatus = false
+		return m, nil, true
 	case msg.Type == tea.KeyEnter:
-		proj := strings.TrimSpace(m.projectInput.Value())
-		m.settingProject = false
-		if proj != "" {
-			return m, m.applyProject(proj)
+		m.settingStatus = false
+		return m, m.applyStatus(statusOptions[m.statusModalCursor].status), true
+	case msg.String() == "0":
+		m.settingStatus = false
+		return m, m.applyStatus(""), true
+	case msg.String() == "1":
+		m.settingStatus = false
+		return m, m.applyStatus("pending"), true
+	case msg.String() == "2":
+		m.settingStatus = false
+		return m, m.applyStatus("active"), true
+	case msg.String() == "3":
+		m.settingStatus = false
+		return m, m.applyStatus("done"), true
+	case msg.String() == "j" || msg.String() == "down":
+		if m.statusModalCursor < len(statusOptions)-1 {
+			m.statusModalCursor++
 		}
-		return m, nil
-	case msg.Type == tea.KeyBackspace && m.projectInput.Value() == "":
-		// Backspace on empty → clear project
-		m.settingProject = false
-		return m, m.applyProject("")
-	default:
-		// Number keys 1-9 when input is empty → pick from choices
-		if m.projectInput.Value() == "" && msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
-			r := msg.Runes[0]
-			if r == '0' {
-				m.settingProject = false
-				return m, m.applyProject("")
-			}
-			if r >= '1' && r <= '9' {
-				idx := int(r - '1')
-				if idx < len(m.projectChoices) {
-					m.settingProject = false
-					return m, m.applyProject(m.projectChoices[idx])
+		return m, nil, true
+	case msg.String() == "k" || msg.String() == "up":
+		if m.statusModalCursor > 0 {
+			m.statusModalCursor--
+		}
+		return m, nil, true
+	}
+	return m, nil, true
+}
+
+func (m model) applyStatus(status string) tea.Cmd {
+	if len(m.selected) > 0 {
+		files := m.selectedFiles()
+		return m.cmdBatchSetStatus(files, status)
+	}
+	if item, ok := m.list.SelectedItem().(plan); ok {
+		if item.status == status {
+			return nil
+		}
+		return m.cmdSetStatus(item, status)
+	}
+	return nil
+}
+
+// ─── Label Modal ─────────────────────────────────────────────────────────────
+
+func (m *model) openLabelModal(batchMode bool) {
+	m.settingLabels = true
+	m.labelBatchMode = batchMode
+	m.labelChoices = recentLabels(*m.planSource())
+	m.labelToggled = make(map[string]bool)
+	m.labelMixed = make(map[string]bool)
+	m.labelDirty = false
+
+	if batchMode && len(m.selected) > 0 {
+		// Count how many selected plans have each label
+		counts := make(map[string]int)
+		total := 0
+		for _, item := range m.list.Items() {
+			if p, ok := item.(plan); ok && m.selected[p.file] {
+				total++
+				for _, l := range p.labels {
+					counts[l]++
 				}
-				return m, nil
 			}
+		}
+		for l, c := range counts {
+			if c == total {
+				m.labelToggled[l] = true
+			} else {
+				m.labelMixed[l] = true
+			}
+		}
+	} else if item, ok := m.list.SelectedItem().(plan); ok {
+		for _, l := range item.labels {
+			m.labelToggled[l] = true
+		}
+	}
+
+	m.labelCursor = 0
+	m.labelFlashIdx = -1
+	m.labelFlashTick = 0
+	m.labelInput.SetValue("")
+	m.labelInput.Focus()
+}
+
+// filteredLabelChoices returns label choices filtered by the current input.
+func (m model) filteredLabelChoices() []string {
+	filter := strings.ToLower(strings.TrimSpace(m.labelInput.Value()))
+	if filter == "" {
+		return m.labelChoices
+	}
+	var filtered []string
+	for _, l := range m.labelChoices {
+		if strings.Contains(l, filter) {
+			filtered = append(filtered, l)
+		}
+	}
+	return filtered
+}
+
+func (m model) handleLabelModal(msg tea.KeyMsg) (model, tea.Cmd, bool) {
+	// Ignore keys during flash animation
+	if m.labelFlashTick > 0 {
+		return m, nil, true
+	}
+	switch {
+	case key.Matches(msg, m.keys.ForceQuit):
+		return m, tea.Quit, true
+	case msg.Type == tea.KeyEsc:
+		m.settingLabels = false
+		if m.hasLabelChanges() {
+			return m, m.applyLabelChanges(), true
+		}
+		return m, nil, true
+	case msg.Type == tea.KeyEnter:
+		filtered := m.filteredLabelChoices()
+		filter := strings.ToLower(strings.TrimSpace(m.labelInput.Value()))
+		if filter != "" && len(filtered) == 0 {
+			// Create new label
+			newLabel := filter
+			m.labelToggled[newLabel] = true
+			m.labelDirty = true
+			m.settingLabels = false
+			return m, m.applyLabelChanges(), true
+		}
+		if filter == "" && m.hasLabelChanges() {
+			// Apply accumulated changes
+			m.settingLabels = false
+			return m, m.applyLabelChanges(), true
+		}
+		if len(filtered) > 0 && m.labelCursor < len(filtered) {
+			// Toggle the label under cursor, flash, then dismiss
+			l := filtered[m.labelCursor]
+			if m.labelMixed[l] {
+				delete(m.labelMixed, l)
+				m.labelToggled[l] = true
+			} else {
+				m.labelToggled[l] = !m.labelToggled[l]
+			}
+			m.labelDirty = true
+			m.labelFlashIdx = m.labelCursor
+			m.labelFlashTick = 5 // 5 ticks × 80ms = 400ms
+			return m, tea.Tick(80*time.Millisecond, func(_ time.Time) tea.Msg {
+				return labelFlashMsg{}
+			}), true
+		}
+		m.settingLabels = false
+		return m, nil, true
+	case msg.String() == " ":
+		// Space = toggle without dismissing (accumulate mode)
+		filtered := m.filteredLabelChoices()
+		if m.labelCursor < len(filtered) {
+			l := filtered[m.labelCursor]
+			if m.labelMixed[l] {
+				// mixed → on
+				delete(m.labelMixed, l)
+				m.labelToggled[l] = true
+			} else {
+				m.labelToggled[l] = !m.labelToggled[l]
+			}
+			m.labelDirty = true
+		}
+		return m, nil, true
+	case msg.String() == "j" || msg.String() == "down":
+		filtered := m.filteredLabelChoices()
+		if m.labelCursor < len(filtered)-1 {
+			m.labelCursor++
+		}
+		return m, nil, true
+	case msg.String() == "k" || msg.String() == "up":
+		if m.labelCursor > 0 {
+			m.labelCursor--
+		}
+		return m, nil, true
+	case msg.Type == tea.KeyBackspace:
+		if m.labelInput.Value() == "" {
+			m.settingLabels = false
+			return m, nil, true
 		}
 		var cmd tea.Cmd
-		m.projectInput, cmd = m.projectInput.Update(msg)
-		return m, cmd
+		m.labelInput, cmd = m.labelInput.Update(msg)
+		m.labelCursor = 0
+		return m, cmd, true
+	default:
+		var cmd tea.Cmd
+		m.labelInput, cmd = m.labelInput.Update(msg)
+		m.labelCursor = 0
+		return m, cmd, true
 	}
+}
+
+func (m model) hasLabelChanges() bool {
+	// Compare toggled labels to current plan's labels
+	if m.labelBatchMode {
+		return m.labelDirty
+	}
+	if item, ok := m.list.SelectedItem().(plan); ok {
+		current := make(map[string]bool)
+		for _, l := range item.labels {
+			current[l] = true
+		}
+		for l, on := range m.labelToggled {
+			if on != current[l] {
+				return true
+			}
+		}
+		for l := range current {
+			if !m.labelToggled[l] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (m model) applyLabelChanges() tea.Cmd {
+	if m.labelBatchMode && len(m.selected) > 0 {
+		// Labels toggled on → add to all plans
+		// Labels toggled off (not mixed) → remove from all plans
+		// Labels still mixed → leave untouched (no add, no remove)
+		var add, remove []string
+		for l, on := range m.labelToggled {
+			if on {
+				add = append(add, l)
+			}
+		}
+		for _, l := range m.labelChoices {
+			if !m.labelToggled[l] && !m.labelMixed[l] {
+				remove = append(remove, l)
+			}
+		}
+		files := m.selectedFiles()
+		return m.cmdBatchUpdateLabels(files, add, remove)
+	}
+	// Single plan: replace all labels
+	var newLabels []string
+	for l, on := range m.labelToggled {
+		if on {
+			newLabels = append(newLabels, l)
+		}
+	}
+	// Sort for deterministic output
+	sort.Strings(newLabels)
+	if item, ok := m.list.SelectedItem().(plan); ok {
+		return m.cmdSetLabels(item, newLabels)
+	}
+	return nil
 }
 
 // handleSelectMode handles keys when items are selected.
@@ -562,6 +831,11 @@ func (m model) handleSelectMode(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		return m, tea.Quit, true
 	case msg.String() == "esc":
 		clear(m.selected)
+		return m, nil, true
+	case key.Matches(msg, m.keys.OpenStatus):
+		first := m.firstSelectedPlan()
+		m.settingStatus = true
+		m.statusModalCursor = statusCursorForStatus(first.status)
 		return m, nil, true
 	case key.Matches(msg, m.keys.CycleStatus):
 		first := m.firstSelectedPlan()
@@ -583,11 +857,8 @@ func (m model) handleSelectMode(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	case msg.String() == "3":
 		files := m.selectedFiles()
 		return m, m.cmdBatchSetStatus(files, "done"), true
-	case key.Matches(msg, m.keys.Project):
-		m.settingProject = true
-		m.projectChoices = recentProjects(*m.planSource())
-		m.projectInput.SetValue("")
-		m.projectInput.Focus()
+	case key.Matches(msg, m.keys.Labels):
+		m.openLabelModal(true)
 		return m, textinput.Blink, true
 	case msg.String() == "a":
 		for _, item := range m.list.Items() {
@@ -596,6 +867,26 @@ func (m model) handleSelectMode(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			}
 		}
 		return m, nil, true
+	case key.Matches(msg, m.keys.CopyFile):
+		if !m.demo.active {
+			files := m.selectedFiles()
+			var paths []string
+			for _, f := range files {
+				paths = append(paths, filepath.Join(m.dir, f))
+			}
+			if err := clipboard.WriteAll(strings.Join(paths, ", ")); err != nil {
+				return m, func() tea.Msg { return errMsg{fmt.Errorf("clipboard: %w", err)} }, true
+			}
+			clear(m.copiedFiles)
+			for _, f := range files {
+				m.copiedFiles[f] = true
+			}
+			m.copiedID++
+			id := m.copiedID
+			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+				return copiedClearMsg{id: id}
+			}), true
+		}
 	case key.Matches(msg, m.keys.Select):
 		if item, ok := m.list.SelectedItem().(plan); ok {
 			if m.selected[item.file] {
@@ -603,7 +894,6 @@ func (m model) handleSelectMode(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			} else {
 				m.selected[item.file] = true
 			}
-			m.list.CursorDown()
 		}
 		return m, nil, true
 	}
@@ -621,7 +911,8 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	if key.Matches(msg, m.keys.Settings) {
 		m.help.ShowAll = false
 		m.confirmDelete = false
-		m.settingProject = false
+		m.settingLabels = false
+		m.settingStatus = false
 		exe, err := os.Executable()
 		if err != nil {
 			return m, func() tea.Msg { return errMsg{fmt.Errorf("could not find executable: %w", err)} }, true
@@ -667,7 +958,7 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	}
 
 	// Space / shift+space — scroll preview regardless of pane focus
-	if !m.help.ShowAll && !m.confirmDelete && !m.settingProject && !m.list.SettingFilter() {
+	if !m.help.ShowAll && !m.confirmDelete && !m.settingStatus && !m.settingLabels && !m.list.SettingFilter() {
 		switch {
 		case key.Matches(msg, m.keys.ScrollDown):
 			m.viewport.HalfViewDown()
@@ -679,7 +970,7 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	}
 
 	// Demo toggle — accessible from any pane, blocked during modals/filters
-	if key.Matches(msg, m.keys.Demo) && !m.list.SettingFilter() && !m.list.IsFiltered() && !m.confirmDelete && !m.settingProject {
+	if key.Matches(msg, m.keys.Demo) && !m.list.SettingFilter() && !m.list.IsFiltered() && !m.confirmDelete && !m.settingStatus && !m.settingLabels {
 		if m.demo.active {
 			m.exitDemoMode()
 			return m, m.renderWindow(), true
@@ -699,14 +990,17 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		return m, nil, true
 	}
 
+	if m.settingLabels {
+		return m.handleLabelModal(msg)
+	}
+	if m.settingStatus {
+		return m.handleStatusModal(msg)
+	}
 	if m.confirmDelete {
 		mod, cmd := m.handleDeleteConfirm(msg)
 		return mod.(model), cmd, true
 	}
-	if m.settingProject {
-		mod, cmd := m.handleProjectInput(msg)
-		return mod.(model), cmd, true
-	}
+
 
 	filtering := m.list.SettingFilter()
 
@@ -730,6 +1024,9 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			return m, nil, true
 		case "u", "pgup":
 			m.viewport.HalfViewUp()
+			return m, nil, true
+		case "left":
+			m.focused = listPane
 			return m, nil, true
 		}
 		switch {
@@ -760,15 +1057,15 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			m.help.ShowAll = true
 			return m, nil, true
 		}
-	case key.Matches(msg, m.keys.SwitchPane):
+	case key.Matches(msg, m.keys.SwitchPane), msg.String() == "right":
 		if !filtering {
 			m.focused = previewPane
 			return m, nil, true
 		}
 	case msg.String() == "esc":
-		if !filtering && (m.showDone || m.projectFilter != "") {
+		if !filtering && (m.showDone || m.labelFilter != "") {
 			m.showDone = false
-			m.projectFilter = ""
+			m.labelFilter = ""
 			if !m.demo.active && m.cfg.ShowAll {
 				m.cfg.ShowAll = false
 				if path, err := configPath(); err == nil {
@@ -781,6 +1078,14 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			m.restoreTitle()
 			return m, nil, true
 		}
+	case key.Matches(msg, m.keys.OpenStatus):
+		if !filtering {
+			if item, ok := m.list.SelectedItem().(plan); ok {
+				m.settingStatus = true
+				m.statusModalCursor = statusCursorForStatus(item.status)
+				return m, nil, true
+			}
+		}
 	case key.Matches(msg, m.keys.CycleStatus):
 		if !filtering {
 			if item, ok := m.list.SelectedItem().(plan); ok {
@@ -789,16 +1094,6 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 					status = "pending"
 				}
 				return m, m.cmdSetStatus(item, status), true
-			}
-		}
-	case key.Matches(msg, m.keys.RevStatus):
-		if !filtering {
-			if item, ok := m.list.SelectedItem().(plan); ok {
-				prev := prevStatus[item.status]
-				if prev == "" {
-					prev = "done"
-				}
-				return m, m.cmdSetStatus(item, prev), true
 			}
 		}
 	case msg.String() == "0" || msg.String() == "1" || msg.String() == "2" || msg.String() == "3":
@@ -816,7 +1111,7 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			target := m.lastStatusChange.oldPlan.status
 			p := m.lastStatusChange.newPlan
 			m.lastStatusChange = nil
-			m.clearStatus()
+			clear(m.undoFiles)
 			return m, m.cmdSetStatus(p, target), true
 		}
 	case key.Matches(msg, m.keys.ToggleDone):
@@ -840,49 +1135,66 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			}
 			return m, nil, true
 		}
-	case key.Matches(msg, m.keys.NextProject), key.Matches(msg, m.keys.PrevProject):
+	case key.Matches(msg, m.keys.NextLabel), key.Matches(msg, m.keys.PrevLabel):
 		if !filtering {
-			projects := recentProjects(*m.planSource())
-			if len(projects) > 0 {
-				forward := key.Matches(msg, m.keys.NextProject)
-				cur := m.projectFilter
+			labels := recentLabels(*m.planSource())
+			if len(labels) > 0 {
+				forward := key.Matches(msg, m.keys.NextLabel)
+				cur := m.labelFilter
 				idx := -1
-				for i, p := range projects {
-					if p == cur {
+				for i, l := range labels {
+					if l == cur {
 						idx = i
 						break
 					}
 				}
-				if forward {
-					if idx < len(projects)-1 {
-						m.projectFilter = projects[idx+1]
+				// Try candidates in cycle order, skipping labels with no visible plans
+				tried := 0
+				for tried <= len(labels) {
+					if forward {
+						if idx < len(labels)-1 {
+							idx++
+							m.labelFilter = labels[idx]
+						} else {
+							idx = -1
+							m.labelFilter = ""
+						}
 					} else {
-						m.projectFilter = ""
+						if idx > 0 {
+							idx--
+							m.labelFilter = labels[idx]
+						} else if idx == 0 || cur != "" {
+							idx = -1
+							m.labelFilter = ""
+						} else {
+							idx = len(labels) - 1
+							m.labelFilter = labels[idx]
+						}
 					}
-				} else {
-					if idx <= 0 && cur != "" {
-						m.projectFilter = ""
-					} else if cur == "" {
-						m.projectFilter = projects[len(projects)-1]
-					} else {
-						m.projectFilter = projects[idx-1]
+					cur = m.labelFilter
+					tried++
+					visible := m.visiblePlans()
+					if len(visible) > 0 || m.labelFilter == "" {
+						m.restoreTitle()
+						m.list.SetItems(plansToItems(visible))
+						m.list.ResetSelected()
+						m.prevIndex = 0
+						// Update viewport to show the new first item
+						if file := m.selectedFile(); file != "" {
+							if content, ok := m.previewCache[file]; ok {
+								m.viewport.SetContent(content)
+								m.viewport.GotoTop()
+							}
+						}
+						return m, m.renderWindow(), true
 					}
 				}
-				m.restoreTitle()
-				visible := m.visiblePlans()
-				m.list.SetItems(plansToItems(visible))
-				m.list.ResetSelected()
-				return m, m.renderWindow(), true
 			}
 		}
-	case key.Matches(msg, m.keys.Project):
+	case key.Matches(msg, m.keys.Labels):
 		if !filtering {
-			if item, ok := m.list.SelectedItem().(plan); ok {
-				m.settingProject = true
-				m.projectChoices = recentProjects(*m.planSource())
-				m.projectInput.SetValue(item.project)
-				m.projectInput.Focus()
-				m.projectInput.CursorEnd()
+			if _, ok := m.list.SelectedItem().(plan); ok {
+				m.openLabelModal(false)
 				return m, textinput.Blink, true
 			}
 		}
@@ -890,9 +1202,8 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		if !filtering {
 			if item, ok := m.list.SelectedItem().(plan); ok {
 				m.confirmDelete = true
-				m.status.id++
-				m.status.text = fmt.Sprintf("Delete %s? (y/n)", item.file)
-				return m, m.status.spinner.Tick, true
+				m.notification = fmt.Sprintf("Delete %s? (y/n)", item.file)
+				return m, nil, true
 			}
 		}
 	case key.Matches(msg, m.keys.CopyFile):
@@ -902,19 +1213,24 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 				if err := clipboard.WriteAll(path); err != nil {
 					return m, func() tea.Msg { return errMsg{fmt.Errorf("clipboard: %w", err)} }, true
 				}
-				return m, m.setStatus("Copied: "+path, statusTimeout), true
+				clear(m.copiedFiles)
+				m.copiedFiles[item.file] = true
+				m.copiedID++
+				id := m.copiedID
+				return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+					return copiedClearMsg{id: id}
+				}), true
 			}
 		}
 	case key.Matches(msg, m.keys.Select):
 		if !filtering {
 			if item, ok := m.list.SelectedItem().(plan); ok {
 				m.selected[item.file] = true
-				m.list.CursorDown()
 			}
 		}
 	}
 
-	// Demo mode: enter/e opens fake Clod Code screen
+	// Demo mode: enter/c opens fake Clod Code screen
 	if !filtering && m.demo.active {
 		if key.Matches(msg, m.keys.Primary) || key.Matches(msg, m.keys.Editor) {
 			if item, ok := m.list.SelectedItem().(plan); ok {
@@ -926,18 +1242,23 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 
 	// Config-driven openers
 	if !filtering && !m.demo.active {
-		var cmd []string
+		var cmdArgs []string
 		var prefix string
+		isEditor := false
 		switch {
 		case key.Matches(msg, m.keys.Primary):
-			cmd = m.cfg.Primary
-			prefix = m.cfg.Preamble
+			cmdArgs = m.cfg.Primary
+			prefix = m.cfg.PromptPrefix
 		case key.Matches(msg, m.keys.Editor):
-			cmd = m.cfg.Editor
+			cmdArgs = m.cfg.Editor
+			isEditor = true
 		}
-		if len(cmd) > 0 {
+		if len(cmdArgs) > 0 {
 			if item, ok := m.list.SelectedItem().(plan); ok {
-				args := expandCommand(cmd, filepath.Join(m.dir, item.file), prefix)
+				args := expandCommand(cmdArgs, filepath.Join(m.dir, item.file), prefix)
+				if isEditor && effectiveEditorMode(m.cfg) == "background" {
+					return m, runBackgroundEditor(args), true
+				}
 				c := shellCommand(args...)
 				dir := m.dir
 				return m, tea.ExecProcess(c, func(err error) tea.Msg {
@@ -1063,17 +1384,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		visible := m.visiblePlans()
 		m.list.SetItems(plansToItems(visible))
 		m.selectFile(msg.newPlan.file)
-		statusText := fmt.Sprintf("%s → %s (u to undo)", msg.newPlan.file, msg.newPlan.status)
-		cmd := m.setStatus(statusText, 0)
-		id := m.status.id
+		// Inline indicator on the affected row (replaces date)
+		statusLabel := msg.newPlan.status
+		if statusLabel == "" {
+			statusLabel = "unset"
+		}
+		m.undoFiles[msg.newPlan.file] = statusLabel
+		m.undoID++
+		undoID := m.undoID
 		return m, tea.Batch(
-			cmd,
+			m.status.spinner.Tick,
 			tea.Tick(statusTimeout, func(time.Time) tea.Msg {
-				return undoExpiredMsg{id: id}
+				return undoExpiredMsg{id: undoID}
 			}),
 		)
 
-	case projectUpdatedMsg:
+	case labelsUpdatedMsg:
 		plans := m.planSource()
 		for i, p := range *plans {
 			if p.file == msg.plan.file {
@@ -1086,7 +1412,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		visible := m.visiblePlans()
 		m.list.SetItems(plansToItems(visible))
 		m.selectFile(msg.plan.file)
-		return m, m.setStatus(fmt.Sprintf("Project set: %s", msg.plan.project), statusTimeout)
+		label := strings.Join(msg.plan.labels, ", ")
+		if label == "" {
+			label = "cleared"
+		}
+		return m, m.setNotification("Labels: "+label, statusTimeout)
 
 	case batchDoneMsg:
 		plans := m.planSource()
@@ -1098,16 +1428,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.previewCache = make(map[string]string)
 		m.prerendered = true
 		cmds = append(cmds, m.renderWindow())
-		cmd := m.setStatus(msg.message, statusTimeout)
-		id := m.status.id
-		cmds = append(cmds, cmd)
+		cmds = append(cmds, m.setNotification(msg.message, statusTimeout))
+		m.batchLingerID++
+		batchID := m.batchLingerID
 		cmds = append(cmds, tea.Tick(statusTimeout, func(time.Time) tea.Msg {
-			return batchLingerExpiredMsg{id: id}
+			return batchLingerExpiredMsg{id: batchID}
 		}))
+		clear(m.selected)
 		return m, tea.Batch(cmds...)
 
 	case batchLingerExpiredMsg:
-		if len(m.batchKeepFiles) > 0 && msg.id == m.status.id {
+		if len(m.batchKeepFiles) > 0 && msg.id == m.batchLingerID {
 			m.batchKeepFiles = nil
 			visible := m.visiblePlans()
 			idx := m.list.Index()
@@ -1120,9 +1451,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case undoExpiredMsg:
-		if m.lastStatusChange != nil && msg.id == m.status.id {
+		if m.lastStatusChange != nil && msg.id == m.undoID {
 			m.lastStatusChange = nil
-			m.clearStatus()
+			clear(m.undoFiles)
 			visible := m.visiblePlans()
 			idx := m.list.Index()
 			m.list.SetItems(plansToItems(visible))
@@ -1156,7 +1487,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err == nil {
 				m.allPlans = plans
 				sortPlans(m.allPlans)
-				visible := filterPlans(plans, m.showDone, m.keepFiles(), m.projectFilter, m.installed)
+				visible := filterPlans(plans, m.showDone, m.keepFiles(), m.labelFilter, m.installed)
 				m.list.SetItems(plansToItems(visible))
 				m.selectFile(prevFile)
 				m.refreshing = make(map[string]bool)
@@ -1176,19 +1507,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.renderWindow())
 
 				if len(msg.files) > 0 {
+					// Only show "Updated:" for files that still exist (not deleted).
+					planSet := make(map[string]bool)
+					for _, p := range plans {
+						planSet[p.file] = true
+					}
+					var changedFiles []string
 					for _, f := range msg.files {
+						if planSet[f] {
+							changedFiles = append(changedFiles, f)
+						}
+					}
+					for _, f := range changedFiles {
 						m.changedFiles[f] = true
 					}
-					m.changedSpinID++
-					id := m.changedSpinID
-					cmds = append(cmds, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
-						return changedSpinExpiredMsg{id: id}
-					}))
-					label := msg.files[0]
-					if len(msg.files) > 1 {
-						label = fmt.Sprintf("%d files", len(msg.files))
+					if len(changedFiles) > 0 {
+						m.changedSpinID++
+						id := m.changedSpinID
+						cmds = append(cmds, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+							return changedSpinExpiredMsg{id: id}
+						}))
+						label := changedFiles[0]
+						if len(changedFiles) > 1 {
+							label = fmt.Sprintf("%d files", len(changedFiles))
+						}
+						cmds = append(cmds, m.setNotification("Updated: "+label, 3*time.Second))
 					}
-					cmds = append(cmds, m.setStatus("Updated: "+label, 3*time.Second))
 				}
 			}
 		}
@@ -1228,18 +1572,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.allPlans = plans
 				sortPlans(m.allPlans)
-				visible := filterPlans(plans, m.showDone, m.keepFiles(), m.projectFilter, m.installed)
+				visible := filterPlans(plans, m.showDone, m.keepFiles(), m.labelFilter, m.installed)
 				m.list.SetItems(plansToItems(visible))
 				m.previewCache = make(map[string]string)
 				cmds = append(cmds, m.renderWindow())
 			} else {
-				cmds = append(cmds, m.setStatus("Error: "+err.Error(), statusTimeout))
+				cmds = append(cmds, m.setNotification("Error: "+err.Error(), statusTimeout))
 			}
 		}
 		return m, tea.Batch(cmds...)
 
 	case spinner.TickMsg:
-		if m.status.text != "" || len(m.changedFiles) > 0 {
+		if len(m.undoFiles) > 0 || len(m.changedFiles) > 0 {
 			var cmd tea.Cmd
 			m.status.spinner, cmd = m.status.spinner.Update(msg)
 			*m.changedSpinView = m.status.spinner.View()
@@ -1250,6 +1594,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusClearMsg:
 		if msg.id == m.status.id {
 			m.clearStatus()
+		}
+		return m, nil
+
+	case notificationClearMsg:
+		if msg.id == m.notificationID {
+			m.notification = ""
+		}
+		return m, nil
+
+	case copiedClearMsg:
+		if msg.id == m.copiedID {
+			clear(m.copiedFiles)
+		}
+		return m, nil
+
+	case labelFlashMsg:
+		if m.labelFlashTick > 0 {
+			m.labelFlashTick--
+			if m.labelFlashTick > 0 {
+				return m, tea.Tick(80*time.Millisecond, func(_ time.Time) tea.Msg {
+					return labelFlashMsg{}
+				})
+			}
+			// Flash done — dismiss and apply
+			m.settingLabels = false
+			m.labelFlashIdx = -1
+			return m, m.applyLabelChanges()
 		}
 		return m, nil
 
@@ -1276,8 +1647,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case editorLaunchedMsg:
+		return m, m.setNotification("Editor opened", 2*time.Second)
+
 	case errMsg:
-		return m, m.setStatus(fmt.Sprintf("Error: %v", msg.err), statusTimeout)
+		return m, m.setNotification(fmt.Sprintf("Error: %v", msg.err), statusTimeout)
 	}
 
 	// Search: temporarily show all plans so filter matches across done/hidden items.
@@ -1297,12 +1671,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	m.restoreTitle()
 	m.updateHelpKeys()
-
-	if m.settingProject {
-		var tiCmd tea.Cmd
-		m.projectInput, tiCmd = m.projectInput.Update(msg)
-		cmds = append(cmds, tiCmd)
-	}
 
 	// On cursor change, swap the preview to the newly selected plan.
 	// Cached content is shown immediately; uncached triggers renderWindow.

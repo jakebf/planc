@@ -85,45 +85,51 @@ func TestBatchSetStatus(t *testing.T) {
 	}
 }
 
-func TestBatchSetProject(t *testing.T) {
+func TestBatchUpdateLabels(t *testing.T) {
 	dir := t.TempDir()
 
 	writeFile(t, filepath.Join(dir, "plan-a.md"), "# Plan A\n\nContent\n")
-	writeFile(t, filepath.Join(dir, "plan-b.md"), "# Plan B\n\nContent\n")
+	writeFile(t, filepath.Join(dir, "plan-b.md"), "---\nlabels: existing\n---\n# Plan B\n\nContent\n")
 
-	cmd := batchSetProject(dir, []string{"plan-a.md", "plan-b.md"}, "myproject")
+	cmd := batchUpdateLabels(dir, []string{"plan-a.md", "plan-b.md"}, []string{"myproject"}, nil)
 	msg := cmd()
 	result, ok := msg.(batchDoneMsg)
 	if !ok {
 		t.Fatalf("expected batchDoneMsg, got %T", msg)
 	}
-	if !strings.Contains(result.message, "project:myproject") {
-		t.Errorf("expected message with 'project:myproject', got %q", result.message)
+	if !strings.Contains(result.message, "+myproject") {
+		t.Errorf("expected message with '+myproject', got %q", result.message)
 	}
 
-	for _, file := range []string{"plan-a.md", "plan-b.md"} {
-		data, _ := os.ReadFile(filepath.Join(dir, file))
-		fields, _ := parseFrontmatter(string(data))
-		if fields["project"] != "myproject" {
-			t.Errorf("%s: project = %q, want myproject", file, fields["project"])
-		}
+	// plan-a should have labels: myproject
+	data, _ := os.ReadFile(filepath.Join(dir, "plan-a.md"))
+	fields, _ := parseFrontmatter(string(data))
+	if fields["labels"] != "myproject" {
+		t.Errorf("plan-a: labels = %q, want myproject", fields["labels"])
+	}
+
+	// plan-b should have labels: existing, myproject
+	data, _ = os.ReadFile(filepath.Join(dir, "plan-b.md"))
+	fields, _ = parseFrontmatter(string(data))
+	labels := parseLabels(fields["labels"])
+	if !hasLabel(labels, "existing") || !hasLabel(labels, "myproject") {
+		t.Errorf("plan-b: labels = %v, want [existing, myproject]", labels)
 	}
 }
 
-
-func TestSetProjectWritesFrontmatter(t *testing.T) {
+func TestSetLabelsWritesFrontmatter(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "plan-a.md")
 	writeFile(t, path, "# Plan A\n\nBody\n")
 
-	cmd := setProject(dir, plan{file: "plan-a.md"}, "atlas")
+	cmd := setLabels(dir, plan{file: "plan-a.md"}, []string{"atlas", "infra"})
 	msg := cmd()
-	updated, ok := msg.(projectUpdatedMsg)
+	updated, ok := msg.(labelsUpdatedMsg)
 	if !ok {
-		t.Fatalf("expected projectUpdatedMsg, got %T", msg)
+		t.Fatalf("expected labelsUpdatedMsg, got %T", msg)
 	}
-	if updated.plan.project != "atlas" {
-		t.Fatalf("project = %q, want atlas", updated.plan.project)
+	if len(updated.plan.labels) != 2 || updated.plan.labels[0] != "atlas" {
+		t.Fatalf("labels = %v, want [atlas, infra]", updated.plan.labels)
 	}
 
 	data, err := os.ReadFile(path)
@@ -131,8 +137,12 @@ func TestSetProjectWritesFrontmatter(t *testing.T) {
 		t.Fatalf("read plan file: %v", err)
 	}
 	fields, _ := parseFrontmatter(string(data))
-	if fields["project"] != "atlas" {
-		t.Fatalf("frontmatter project = %q, want atlas", fields["project"])
+	if fields["labels"] != "atlas, infra" {
+		t.Fatalf("frontmatter labels = %q, want 'atlas, infra'", fields["labels"])
+	}
+	// project should be removed
+	if fields["project"] != "" {
+		t.Fatalf("frontmatter project should be empty after setLabels, got %q", fields["project"])
 	}
 }
 

@@ -17,12 +17,13 @@ import (
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 type config struct {
-	PlansDir  string   `json:"plans_dir"`           // path to plans directory
-	Primary   []string `json:"primary"`             // enter: main AI assistant
-	Editor    []string `json:"editor"`              // e: text editor
-	Preamble  string   `json:"preamble"`            // prefix for primary command path arg
-	ShowAll   bool     `json:"show_all,omitempty"`  // persist active vs all filter
-	Installed string   `json:"installed,omitempty"` // RFC3339 timestamp of first setup
+	PlansDir     string   `json:"plans_dir"`                    // path to plans directory
+	Primary      []string `json:"primary"`                      // enter: main AI assistant
+	Editor       []string `json:"editor"`                       // e: text editor
+	PromptPrefix string   `json:"prompt_prefix"`                // prefix for primary command path arg
+	EditorMode   string   `json:"editor_mode,omitempty"`        // "background", "foreground", or "" (auto)
+	ShowAll      bool     `json:"show_all,omitempty"`           // persist active vs all filter
+	Installed    string   `json:"installed,omitempty"`          // RFC3339 timestamp of first setup
 }
 
 func defaultPlansDir() string {
@@ -38,10 +39,10 @@ func defaultPlansDir() string {
 // array from a shallow struct copy.
 func newDefaultConfig() config {
 	return config{
-		PlansDir: defaultPlansDir(),
-		Primary:  []string{"claude"},
-		Editor:   []string{"code"},
-		Preamble: "Read this plan file: ",
+		PlansDir:     defaultPlansDir(),
+		Primary:      []string{"claude"},
+		Editor:       []string{"code"},
+		PromptPrefix: "Read this plan file: ",
 	}
 }
 
@@ -81,8 +82,8 @@ func loadConfigRaw() config {
 		return newDefaultConfig()
 	}
 	cfg.PlansDir = expandHome(cfg.PlansDir)
-	if cfg.Preamble == "" {
-		cfg.Preamble = newDefaultConfig().Preamble
+	if cfg.PromptPrefix == "" {
+		cfg.PromptPrefix = newDefaultConfig().PromptPrefix
 	}
 	return cfg
 }
@@ -105,8 +106,8 @@ func loadConfig() config {
 		return newDefaultConfig()
 	}
 	cfg.PlansDir = expandHome(cfg.PlansDir)
-	if cfg.Preamble == "" {
-		cfg.Preamble = newDefaultConfig().Preamble
+	if cfg.PromptPrefix == "" {
+		cfg.PromptPrefix = newDefaultConfig().PromptPrefix
 	}
 	if cfg.Installed == "" {
 		cfg.Installed = time.Now().Format(time.RFC3339)
@@ -194,11 +195,11 @@ func showWelcome(scanner *bufio.Scanner) {
 	fmt.Println(dim.Render("  them in a two-pane layout with rendered markdown preview."))
 	fmt.Println()
 	time.Sleep(300 * time.Millisecond)
-	fmt.Println("  " + key.Render("s") + dim.Render(" cycle status    ") + key.Render("p") + dim.Render(" set project     ") + key.Render("x") + dim.Render(" batch select"))
-	fmt.Println("  " + key.Render("enter") + dim.Render(" open plan   ") + key.Render("e") + dim.Render(" edit plan       ") + key.Render("?") + dim.Render(" all keybindings"))
+	fmt.Println("  " + key.Render("s") + dim.Render(" set status      ") + key.Render("l") + dim.Render(" set labels      ") + key.Render("x") + dim.Render(" batch select"))
+	fmt.Println("  " + key.Render("enter") + dim.Render(" edit plan   ") + key.Render("c") + dim.Render(" coding agent    ") + key.Render("?") + dim.Render(" all keybindings"))
 	fmt.Println()
 	time.Sleep(200 * time.Millisecond)
-	fmt.Println(dim.Render("  Status and project are stored as YAML frontmatter."))
+	fmt.Println(dim.Render("  Status and labels are stored as YAML frontmatter."))
 	fmt.Println(dim.Render("  Plans with no user action are not modified at all."))
 	fmt.Println()
 
@@ -230,10 +231,10 @@ func runSetup(path string, current config, scanner *bufio.Scanner) config {
 	}
 
 	cfg := current
-	cfg.PlansDir = expandHome(prompt("Plans directory        ", current.PlansDir))
-	cfg.Primary = splitShellWords(prompt("Primary command (enter)", strings.Join(current.Primary, " ")))
-	cfg.Editor = splitShellWords(prompt("Editor command  (e)    ", strings.Join(current.Editor, " ")))
-	cfg.Preamble = prompt("Primary preamble       ", current.Preamble)
+	cfg.PlansDir = expandHome(prompt("Plans directory          ", current.PlansDir))
+	cfg.Editor = splitShellWords(prompt("Editor command  (enter) ", strings.Join(current.Editor, " ")))
+	cfg.Primary = splitShellWords(prompt("Coding agent    (c)     ", strings.Join(current.Primary, " ")))
+	cfg.PromptPrefix = prompt("Prompt prefix           ", current.PromptPrefix)
 	fmt.Println()
 
 	if err := saveConfig(path, cfg); err != nil {
@@ -295,6 +296,31 @@ func expandCommand(args []string, filePath string, prefix string) []string {
 		out = append(out, prefix+filePath)
 	}
 	return out
+}
+
+// isTerminalEditor returns true if the command appears to be a terminal-based editor.
+func isTerminalEditor(cmd []string) bool {
+	if len(cmd) == 0 {
+		return false
+	}
+	base := filepath.Base(cmd[0])
+	switch base {
+	case "vim", "vi", "nvim", "nano", "emacs", "hx", "micro":
+		return true
+	}
+	return false
+}
+
+// effectiveEditorMode resolves the editor mode: "foreground" for terminal editors,
+// "background" for GUI editors, unless explicitly overridden.
+func effectiveEditorMode(cfg config) string {
+	if cfg.EditorMode == "foreground" || cfg.EditorMode == "background" {
+		return cfg.EditorMode
+	}
+	if isTerminalEditor(cfg.Editor) {
+		return "foreground"
+	}
+	return "background"
 }
 
 // commandLabel returns the base name of the first element in a command slice.

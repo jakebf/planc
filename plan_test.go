@@ -129,12 +129,12 @@ func TestScanPlans(t *testing.T) {
 	}
 
 	a := byFile["plan-a.md"]
-	if a.status != "active" || a.project != "foo" || a.title != "Alpha Plan" {
+	if a.status != "active" || !hasLabel(a.labels, "foo") || a.title != "Alpha Plan" {
 		t.Errorf("plan-a: got %+v", a)
 	}
 
 	b := byFile["plan-b.md"]
-	if b.status != "" || b.project != "" || b.title != "Beta Plan" {
+	if b.status != "" || len(b.labels) != 0 || b.title != "Beta Plan" {
 		t.Errorf("plan-b: got %+v", b)
 	}
 
@@ -270,20 +270,68 @@ func TestFilterPlansInstalledTime(t *testing.T) {
 	}
 }
 
-func TestRecentProjects(t *testing.T) {
+func TestScanPlansMigratesProjectToLabels(t *testing.T) {
+	dir := t.TempDir()
+	// File with old project field (no labels)
+	writeFile(t, filepath.Join(dir, "old.md"), "---\nstatus: active\nproject: foo\n---\n# Old Plan\n")
+	// File with new labels field
+	writeFile(t, filepath.Join(dir, "new.md"), "---\nstatus: active\nlabels: bar, baz\n---\n# New Plan\n")
+
+	plans, err := scanPlans(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byFile := make(map[string]plan)
+	for _, p := range plans {
+		byFile[p.file] = p
+	}
+
+	old := byFile["old.md"]
+	if len(old.labels) != 1 || old.labels[0] != "foo" {
+		t.Errorf("old plan: labels = %v, want [foo] (migrated from project)", old.labels)
+	}
+
+	new := byFile["new.md"]
+	if len(new.labels) != 2 || new.labels[0] != "bar" || new.labels[1] != "baz" {
+		t.Errorf("new plan: labels = %v, want [bar, baz]", new.labels)
+	}
+}
+
+func TestSetLabelsWritesMigration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plan.md")
+	// Start with old project field
+	writeFile(t, path, "---\nstatus: active\nproject: foo\n---\n# Plan\n\nBody\n")
+
+	// Write labels via setFrontmatter
+	if err := setFrontmatter(path, map[string]string{"labels": "bar, baz", "project": ""}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, _ := os.ReadFile(path)
+	fields, _ := parseFrontmatter(string(data))
+	if fields["labels"] != "bar, baz" {
+		t.Errorf("labels = %q, want 'bar, baz'", fields["labels"])
+	}
+	if fields["project"] != "" {
+		t.Errorf("project should be removed after labels write, got %q", fields["project"])
+	}
+}
+
+func TestRecentLabels(t *testing.T) {
 	plans := testPlans()
-	recent := recentProjects(plans)
+	recent := recentLabels(plans)
 	if len(recent) != 4 {
-		t.Errorf("expected 4 unique projects, got %d", len(recent))
+		t.Errorf("expected 4 unique labels, got %d", len(recent))
 	}
 	// All have count 1, so order is non-deterministic. Just check all are present.
 	found := make(map[string]bool)
-	for _, p := range recent {
-		found[p] = true
+	for _, l := range recent {
+		found[l] = true
 	}
 	for _, want := range []string{"kokua", "pulse", "atlas", "orion"} {
 		if !found[want] {
-			t.Errorf("missing project %q", want)
+			t.Errorf("missing label %q", want)
 		}
 	}
 }

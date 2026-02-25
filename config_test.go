@@ -133,7 +133,7 @@ func TestSplitShellWords(t *testing.T) {
 	}
 }
 
-func TestLoadConfigPreservesPreamble(t *testing.T) {
+func TestLoadConfigPreservesPromptPrefix(t *testing.T) {
 	cfgRoot := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfgRoot)
 
@@ -143,21 +143,21 @@ func TestLoadConfigPreservesPreamble(t *testing.T) {
 	}
 	custom := "Implement this plan: "
 	if err := saveConfig(path, config{
-		PlansDir: "~/plans",
-		Primary:  []string{"claude"},
-		Editor:   []string{"vim"},
-		Preamble: custom,
+		PlansDir:     "~/plans",
+		Primary:      []string{"claude"},
+		Editor:       []string{"vim"},
+		PromptPrefix: custom,
 	}); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
 
 	loaded := loadConfig()
-	if loaded.Preamble != custom {
-		t.Fatalf("Preamble = %q, want %q", loaded.Preamble, custom)
+	if loaded.PromptPrefix != custom {
+		t.Fatalf("PromptPrefix = %q, want %q", loaded.PromptPrefix, custom)
 	}
 }
 
-func TestLoadConfigDefaultPreamble(t *testing.T) {
+func TestLoadConfigDefaultPromptPrefix(t *testing.T) {
 	cfgRoot := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfgRoot)
 
@@ -165,7 +165,7 @@ func TestLoadConfigDefaultPreamble(t *testing.T) {
 	if err != nil {
 		t.Fatalf("configPath: %v", err)
 	}
-	// Config with no preamble field — should get default
+	// Config with no prompt_prefix or preamble — should get default
 	if err := saveConfig(path, config{
 		PlansDir: "~/plans",
 		Primary:  []string{"claude"},
@@ -175,8 +175,8 @@ func TestLoadConfigDefaultPreamble(t *testing.T) {
 	}
 
 	loaded := loadConfig()
-	if loaded.Preamble != "Read this plan file: " {
-		t.Fatalf("Preamble = %q, want default", loaded.Preamble)
+	if loaded.PromptPrefix != "Read this plan file: " {
+		t.Fatalf("PromptPrefix = %q, want default", loaded.PromptPrefix)
 	}
 }
 

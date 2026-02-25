@@ -128,14 +128,19 @@ func setPlanStatus(dir string, p plan, newStatus string) tea.Cmd {
 	}
 }
 
-func setProject(dir string, p plan, project string) tea.Cmd {
+func setLabels(dir string, p plan, labels []string) tea.Cmd {
 	return func() tea.Msg {
-		if err := setFrontmatter(filepath.Join(dir, p.file), map[string]string{"project": project}); err != nil {
+		updates := map[string]string{
+			"labels":  labelsString(labels),
+			"project": "", // migrate away from project
+		}
+		if err := setFrontmatter(filepath.Join(dir, p.file), updates); err != nil {
 			return errMsg{err}
 		}
 		updated := p
-		updated.project = project
-		return projectUpdatedMsg{plan: updated}
+		updated.labels = labels
+		updated.project = ""
+		return labelsUpdatedMsg{plan: updated}
 	}
 }
 
@@ -167,11 +172,27 @@ func batchSetStatus(dir string, files []string, status string) tea.Cmd {
 	}
 }
 
-func batchSetProject(dir string, files []string, project string) tea.Cmd {
+func batchUpdateLabels(dir string, files []string, add []string, remove []string) tea.Cmd {
 	return func() tea.Msg {
 		var failed int
 		for _, file := range files {
-			if err := setFrontmatter(filepath.Join(dir, file), map[string]string{"project": project}); err != nil {
+			// Read current labels from file
+			data, err := os.ReadFile(filepath.Join(dir, file))
+			if err != nil {
+				failed++
+				continue
+			}
+			fm, _ := parseFrontmatter(string(data))
+			existing := parseLabels(fm["labels"])
+			if len(existing) == 0 && fm["project"] != "" {
+				existing = []string{fm["project"]}
+			}
+			newLabels := applyLabelChanges(existing, add, remove)
+			updates := map[string]string{
+				"labels":  labelsString(newLabels),
+				"project": "", // migrate away from project
+			}
+			if err := setFrontmatter(filepath.Join(dir, file), updates); err != nil {
 				failed++
 			}
 		}
@@ -179,14 +200,59 @@ func batchSetProject(dir string, files []string, project string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		msg := fmt.Sprintf("%d plans → project:%s", len(files), project)
+		var parts []string
+		if len(add) > 0 {
+			parts = append(parts, "+"+strings.Join(add, ","))
+		}
+		if len(remove) > 0 {
+			parts = append(parts, "-"+strings.Join(remove, ","))
+		}
+		msg := fmt.Sprintf("%d plans %s", len(files), strings.Join(parts, " "))
 		if failed > 0 {
 			msg += fmt.Sprintf(" (%d failed)", failed)
 		}
 		return batchDoneMsg{
 			plans:   plans,
+			files:   files,
 			message: msg,
 		}
+	}
+}
+
+// applyLabelChanges applies add/remove to existing labels, returning a new slice.
+func applyLabelChanges(existing []string, add []string, remove []string) []string {
+	removeSet := make(map[string]bool)
+	for _, r := range remove {
+		removeSet[r] = true
+	}
+	var result []string
+	seen := make(map[string]bool)
+	for _, l := range existing {
+		if !removeSet[l] && !seen[l] {
+			result = append(result, l)
+			seen[l] = true
+		}
+	}
+	for _, a := range add {
+		if !seen[a] {
+			result = append(result, a)
+			seen[a] = true
+		}
+	}
+	return result
+}
+
+// runBackgroundEditor launches the editor in the background (for GUI editors).
+// Returns editorLaunchedMsg immediately. A goroutine waits for the process
+// to prevent zombies; the file watcher picks up any changes.
+func runBackgroundEditor(args []string) tea.Cmd {
+	return func() tea.Msg {
+		c := shellCommand(args...)
+		if err := c.Start(); err != nil {
+			return errMsg{fmt.Errorf("editor start: %w", err)}
+		}
+		go func() { _ = c.Wait() }()
+		return editorLaunchedMsg{}
 	}
 }
 
@@ -205,16 +271,16 @@ func (s diskStore) deletePlan(p plan) tea.Cmd {
 	return deletePlan(s.dir, p)
 }
 
-func (s diskStore) setProject(p plan, project string) tea.Cmd {
-	return setProject(s.dir, p, project)
+func (s diskStore) setLabels(p plan, labels []string) tea.Cmd {
+	return setLabels(s.dir, p, labels)
 }
 
 func (s diskStore) batchSetStatus(files []string, status string) tea.Cmd {
 	return batchSetStatus(s.dir, files, status)
 }
 
-func (s diskStore) batchSetProject(files []string, project string) tea.Cmd {
-	return batchSetProject(s.dir, files, project)
+func (s diskStore) batchUpdateLabels(files []string, add []string, remove []string) tea.Cmd {
+	return batchUpdateLabels(s.dir, files, add, remove)
 }
 
 // watchDir watches the plans directory for .md file changes.

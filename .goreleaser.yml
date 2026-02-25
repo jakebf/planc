@@ -29,6 +29,17 @@ release:
   extra_files:
     - glob: CHANGELOG.md
 
+brews:
+  - repository:
+      owner: jakebf
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/jakebf/planc
+    description: A tiny TUI for browsing Claude Code plans
+    license: MIT
+    install: |
+      bin.install "planc"
+
 changelog:
   sort: asc
   filters:

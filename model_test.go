@@ -14,10 +14,10 @@ func testPlans() []plan {
 	now := time.Now()
 	day := 24 * time.Hour
 	return []plan{
-		{status: "active", project: "kokua", title: "Material component migration playbook", created: now.Add(-1 * day), file: "humming-marinating-narwhal.md"},
-		{status: "active", project: "pulse", title: "Synthetic EHR database generator", created: now.Add(-7 * day), file: "deep-crunching-sprout.md"},
-		{status: "pending", project: "atlas", title: "Route optimization service", created: now.Add(-9 * day), file: "bright-sailing-otter.md"},
-		{status: "done", project: "orion", title: "Legacy API deprecation tracker", created: now.Add(-22 * day), file: "calm-drifting-whale.md"},
+		{status: "active", labels: []string{"kokua"}, title: "Material component migration playbook", created: now.Add(-1 * day), file: "humming-marinating-narwhal.md"},
+		{status: "active", labels: []string{"pulse"}, title: "Synthetic EHR database generator", created: now.Add(-7 * day), file: "deep-crunching-sprout.md"},
+		{status: "pending", labels: []string{"atlas"}, title: "Route optimization service", created: now.Add(-9 * day), file: "bright-sailing-otter.md"},
+		{status: "done", labels: []string{"orion"}, title: "Legacy API deprecation tracker", created: now.Add(-22 * day), file: "calm-drifting-whale.md"},
 	}
 }
 
@@ -164,19 +164,23 @@ func TestSelectToggle(t *testing.T) {
 	m := testModel()
 	plans := testPlans()
 
-	// Press x — first item should be selected, cursor advances
 	xKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}}
+	jKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}}
+
+	// Press x — first item should be selected, cursor stays
 	m2, _ := m.Update(xKey)
 	m = m2.(model)
 
 	if !m.selected[plans[0].file] {
 		t.Errorf("expected %q to be selected after first x", plans[0].file)
 	}
-	if m.list.Index() != 1 {
-		t.Errorf("expected cursor at 1 after x, got %d", m.list.Index())
+	if m.list.Index() != 0 {
+		t.Errorf("expected cursor at 0 after x, got %d", m.list.Index())
 	}
 
-	// Press x again — second item selected, cursor advances
+	// Move down, press x — second item selected
+	m2, _ = m.Update(jKey)
+	m = m2.(model)
 	m2, _ = m.Update(xKey)
 	m = m2.(model)
 	if !m.selected[plans[1].file] {
@@ -186,12 +190,8 @@ func TestSelectToggle(t *testing.T) {
 		t.Errorf("expected 2 selected, got %d", len(m.selected))
 	}
 
-	// Press x on second item again (cursor moved back) — should deselect
-	// Move cursor back up first
-	kKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}}
-	m2, _ = m.Update(kKey)
-	m = m2.(model)
-	m2, _ = m.Update(xKey) // toggle off item at index 1
+	// Press x again on same item — should deselect
+	m2, _ = m.Update(xKey)
 	m = m2.(model)
 	if m.selected[plans[1].file] {
 		t.Errorf("expected %q to be deselected after toggle", plans[1].file)
@@ -223,9 +223,12 @@ func TestSelectAll(t *testing.T) {
 func TestSelectEscClears(t *testing.T) {
 	m := testModel()
 
-	// Select two items
+	// Select two items (x, j, x)
 	xKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}}
+	jKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}}
 	m2, _ := m.Update(xKey)
+	m = m2.(model)
+	m2, _ = m.Update(jKey)
 	m = m2.(model)
 	m2, _ = m.Update(xKey)
 	m = m2.(model)
@@ -254,9 +257,12 @@ func TestSelectCycleStatus(t *testing.T) {
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 50})
 	m = m2.(model)
 
-	// Select both items
+	// Select both items (x, j, x)
 	xKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}}
+	jKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}}
 	m2, _ = m.Update(xKey)
+	m = m2.(model)
+	m2, _ = m.Update(jKey)
 	m = m2.(model)
 	m2, _ = m.Update(xKey)
 	m = m2.(model)
@@ -265,14 +271,14 @@ func TestSelectCycleStatus(t *testing.T) {
 		t.Fatalf("expected 2 selected, got %d", len(m.selected))
 	}
 
-	// s cycles based on first selected: active → done
-	sKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}}
-	m2, cmd := m.Update(sKey)
+	// ~ cycles based on first selected: active → done
+	tildeKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'~'}}
+	m2, cmd := m.Update(tildeKey)
 	m = m2.(model)
 
 	// Selection should be preserved (esc to deselect)
 	if len(m.selected) != 2 {
-		t.Errorf("expected selection preserved after s, got %d", len(m.selected))
+		t.Errorf("expected selection preserved after ~, got %d", len(m.selected))
 	}
 
 	// Execute the batch command and verify
@@ -318,7 +324,7 @@ func TestStatusUpdateKeepsDoneVisibleUntilUndoExpires(t *testing.T) {
 		t.Fatalf("expected done item to stay visible for undo, got %d items", len(m.list.Items()))
 	}
 
-	m2, _ = m.Update(undoExpiredMsg{id: m.status.id})
+	m2, _ = m.Update(undoExpiredMsg{id: m.undoID})
 	m = m2.(model)
 	if len(m.list.Items()) != 1 {
 		t.Fatalf("expected done item to disappear after undo expires, got %d items", len(m.list.Items()))
@@ -329,7 +335,7 @@ func TestStatusUpdateKeepsDoneVisibleUntilUndoExpires(t *testing.T) {
 	}
 }
 
-func TestProjectInputNumberShortcutAppliesProject(t *testing.T) {
+func TestLabelModalToggleAppliesLabels(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "plan-a.md"), "---\nstatus: active\n---\n# Plan A\n")
 
@@ -341,28 +347,27 @@ func TestProjectInputNumberShortcutAppliesProject(t *testing.T) {
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = m2.(model)
 
-	m.settingProject = true
-	m.projectChoices = []string{"atlas"}
-	m.projectInput.SetValue("")
-	m.projectInput.Focus()
+	// Open label modal, type a new label, and press enter to create it
+	m.openLabelModal(false)
+	m.labelInput.SetValue("atlas")
 
-	oneKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}}
-	m2, cmd := m.Update(oneKey)
+	enterKey := tea.KeyMsg{Type: tea.KeyEnter}
+	m2, cmd := m.Update(enterKey)
 	m = m2.(model)
-	if m.settingProject {
-		t.Fatal("project input should close after numeric shortcut")
+	if m.settingLabels {
+		t.Fatal("label modal should close after creating new label")
 	}
 	if cmd == nil {
-		t.Fatal("expected applyProject command")
+		t.Fatal("expected label apply command")
 	}
 
 	msg := cmd()
-	updated, ok := msg.(projectUpdatedMsg)
+	updated, ok := msg.(labelsUpdatedMsg)
 	if !ok {
-		t.Fatalf("expected projectUpdatedMsg, got %T", msg)
+		t.Fatalf("expected labelsUpdatedMsg, got %T", msg)
 	}
-	if updated.plan.project != "atlas" {
-		t.Fatalf("project = %q, want atlas", updated.plan.project)
+	if len(updated.plan.labels) != 1 || updated.plan.labels[0] != "atlas" {
+		t.Fatalf("labels = %v, want [atlas]", updated.plan.labels)
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, "plan-a.md"))
@@ -370,8 +375,87 @@ func TestProjectInputNumberShortcutAppliesProject(t *testing.T) {
 		t.Fatalf("read plan file: %v", err)
 	}
 	fields, _ := parseFrontmatter(string(data))
-	if fields["project"] != "atlas" {
-		t.Fatalf("frontmatter project = %q, want atlas", fields["project"])
+	if fields["labels"] != "atlas" {
+		t.Fatalf("frontmatter labels = %q, want atlas", fields["labels"])
+	}
+}
+
+func TestBatchLabelModalEscNoChanges(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "plan-a.md"), "---\nstatus: active\nlabels: shared\n---\n# Plan A\n")
+	writeFile(t, filepath.Join(dir, "plan-b.md"), "---\nstatus: active\nlabels: shared\n---\n# Plan B\n")
+
+	plans, err := scanPlans(dir)
+	if err != nil {
+		t.Fatalf("scanPlans: %v", err)
+	}
+	m := newModel(plans, dir, newDefaultConfig(), nil)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = m2.(model)
+
+	// Select both plans
+	for _, item := range m.list.Items() {
+		if p, ok := item.(plan); ok {
+			m.selected[p.file] = true
+		}
+	}
+
+	// Open batch label modal (pre-seeds "shared" as toggled)
+	m.openLabelModal(true)
+	if !m.labelToggled["shared"] {
+		t.Fatal("expected 'shared' to be pre-toggled in batch mode")
+	}
+
+	// Press Esc without making any changes
+	escKey := tea.KeyMsg{Type: tea.KeyEsc}
+	m2, cmd := m.Update(escKey)
+	m = m2.(model)
+	if m.settingLabels {
+		t.Fatal("label modal should close on Esc")
+	}
+	if cmd != nil {
+		t.Fatal("expected no command when Esc pressed without changes")
+	}
+}
+
+func TestLabelCycleSkipsEmptyResults(t *testing.T) {
+	// "orion" label only exists on a done plan. With showDone=false,
+	// cycling to it should be skipped — never producing an empty list.
+	m := testModel()
+	m.showDone = false
+
+	// Cycle forward through all labels and back to ""
+	labels := recentLabels(m.allPlans)
+	bracketRight := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}}
+	for i := 0; i <= len(labels); i++ {
+		m2, _ := m.Update(bracketRight)
+		m = m2.(model)
+		if len(m.list.Items()) == 0 {
+			t.Fatalf("empty list after %d presses of ], labelFilter=%q", i+1, m.labelFilter)
+		}
+	}
+}
+
+func TestLabelCycleUpdatesPreview(t *testing.T) {
+	m := testModel()
+	m.showDone = true // show all plans so every label has results
+
+	// Record the initial viewport content (first plan's preview)
+	initialContent := m.viewport.View()
+
+	// Cycle to next label
+	bracketRight := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}}
+	m2, cmd := m.Update(bracketRight)
+	m = m2.(model)
+	execCmd(t, &m, cmd)
+
+	// The selected plan changed, so the viewport should reflect the new plan
+	if file := m.selectedFile(); file != "" {
+		if cached, ok := m.previewCache[file]; ok {
+			if m.viewport.View() == initialContent && cached != initialContent {
+				t.Fatal("viewport was not updated after label cycle changed the selected plan")
+			}
+		}
 	}
 }
 

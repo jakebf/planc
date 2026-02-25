@@ -121,6 +121,28 @@ func (m *model) refreshReleaseNotesView() {
 	m.releaseNotes.viewport.GotoTop()
 }
 
+// renderFooter combines left-aligned help hints with a right-aligned notification.
+// If width is too narrow, the notification is truncated first.
+func renderFooter(help, notification string, width int) string {
+	if notification == "" {
+		return help
+	}
+	styled := statusTextStyle.Render(notification) + " "
+	notifW := lipgloss.Width(styled)
+	helpW := lipgloss.Width(help)
+	gap := 2
+	if helpW+gap+notifW <= width {
+		pad := width - helpW - notifW
+		return help + strings.Repeat(" ", pad) + styled
+	}
+	// Not enough room — truncate notification
+	avail := width - helpW - gap
+	if avail > 3 {
+		return help + strings.Repeat(" ", gap) + statusTextStyle.Render(truncateForWidth(notification, avail-1)) + " "
+	}
+	return help
+}
+
 // ─── View ────────────────────────────────────────────────────────────────────
 
 func (m model) View() string {
@@ -158,7 +180,7 @@ func (m model) View() string {
 			Render("No plans yet\n\nUse plan mode in Claude Code\nand get planning!\n\n~/.claude/plans/\n\nd  try demo mode")
 		leftContent = lipgloss.Place(listW-2, innerH, lipgloss.Center, lipgloss.Center, hint)
 	} else if !m.showDone && len(m.list.Items()) == 0 {
-		msg := "No active plans\n\na show all  ·  s set status  ·  p set project\n\nStatus and project are stored as YAML\nfrontmatter in your plan files."
+		msg := "No active plans\n\na show all  ·  s set status  ·  l set labels\n\nStatus and labels are stored as YAML\nfrontmatter in your plan files."
 		if !m.demo.active {
 			msg += "\n\nd  try demo mode"
 		}
@@ -181,52 +203,23 @@ func (m model) View() string {
 	)
 
 	var statusBar string
-	if len(m.selected) > 0 && !m.settingProject {
+	if len(m.selected) > 0 {
 		count := len(m.selected)
-		first := m.firstSelectedPlan()
-		sLabel := nextStatus[first.status]
-		if sLabel == "" {
-			sLabel = "status"
-		}
 		hintStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 		dimStyle := lipgloss.NewStyle().Foreground(colorDim)
 		statusBar = " " + statusTextStyle.Render(fmt.Sprintf("%d selected", count)) + "  " +
-			hintStyle.Render("s") + dimStyle.Render(" "+sLabel) + dimStyle.Render(" | ") +
-			hintStyle.Render("0") + dimStyle.Render(" unset") + dimStyle.Render(" | ") +
-			hintStyle.Render("1") + dimStyle.Render(" pending") + dimStyle.Render(" | ") +
-			hintStyle.Render("2") + dimStyle.Render(" active") + dimStyle.Render(" | ") +
-			hintStyle.Render("3") + dimStyle.Render(" done") + dimStyle.Render(" | ") +
-			hintStyle.Render("p") + dimStyle.Render(" project") + dimStyle.Render(" | ") +
+			hintStyle.Render("s") + dimStyle.Render(" status") + dimStyle.Render(" | ") +
+			hintStyle.Render("l") + dimStyle.Render(" labels") + dimStyle.Render(" | ") +
+			hintStyle.Render("C") + dimStyle.Render(" copy path") + dimStyle.Render(" | ") +
 			hintStyle.Render("a") + dimStyle.Render(" all") + dimStyle.Render(" | ") +
 			hintStyle.Render("esc") + dimStyle.Render(" clear")
-	} else if m.settingProject {
-		hintStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
-		dimStyle := lipgloss.NewStyle().Foreground(colorDim)
-		statusBar = " project: " + m.projectInput.View() + "  "
-		if m.projectInput.Value() == "" {
-			max := 9
-			if len(m.projectChoices) < max {
-				max = len(m.projectChoices)
-			}
-			for i := 0; i < max; i++ {
-				if i > 0 {
-					statusBar += dimStyle.Render(" | ")
-				}
-				statusBar += hintStyle.Render(strconv.Itoa(i+1)) + dimStyle.Render(" "+m.projectChoices[i])
-			}
-			if max > 0 {
-				statusBar += dimStyle.Render(" | ")
-			}
-			statusBar += hintStyle.Render("0") + dimStyle.Render(" clear")
-		}
-	} else if m.status.text != "" {
-		statusBar = " " + m.status.spinner.View() + " " + statusTextStyle.Render(m.status.text)
 	} else if m.updateAvailable != nil {
 		notice := fmt.Sprintf("Update %s available · go install github.com/jakebf/planc@latest", m.updateAvailable.version)
 		statusBar = " " + updateTextStyle.Render(truncateForWidth(notice, m.width-1))
 	} else {
 		statusBar = " " + m.help.ShortHelpView(m.keys.ShortHelp())
 	}
+	statusBar = renderFooter(statusBar, m.notification, m.width)
 	base := panes + "\n" + statusBar
 
 	if m.releaseNotes.on {
@@ -242,6 +235,14 @@ func (m model) View() string {
 			lipgloss.WithWhitespaceChars(" "),
 			lipgloss.WithWhitespaceForeground(colorBlack),
 		)
+	}
+
+	if m.settingLabels {
+		base = m.renderLabelModal()
+	}
+
+	if m.settingStatus {
+		base = m.renderStatusModal(base)
 	}
 
 	if m.help.ShowAll {
@@ -272,4 +273,168 @@ func (m model) View() string {
 	}
 
 	return base
+}
+
+func (m model) renderStatusModal(_ string) string {
+	dimStyle := lipgloss.NewStyle().Foreground(colorDim)
+	accentStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+
+	// Context line: plan title or batch count
+	var context string
+	if len(m.selected) > 0 {
+		context = fmt.Sprintf("%d plans selected", len(m.selected))
+	} else if item, ok := m.list.SelectedItem().(plan); ok {
+		context = item.file
+	}
+
+	var b strings.Builder
+	b.WriteString(helpTitleStyle.Render("Set Status") + "\n")
+	b.WriteString(dimStyle.Render(context) + "\n\n")
+
+	for i, opt := range statusOptions {
+		isCursor := i == m.statusModalCursor
+		var icon string
+		switch opt.status {
+		case "active":
+			icon = activeStyle.Render(opt.icon)
+		case "pending":
+			icon = pendStyle.Render(opt.icon)
+		case "done":
+			icon = doneStyle.Render(opt.icon)
+		default:
+			icon = unsetStyle.Render(opt.icon)
+		}
+		cursor := "  "
+		if isCursor {
+			cursor = accentStyle.Render("> ")
+		}
+		if isCursor {
+			b.WriteString(fmt.Sprintf("%s%s  %s  %s\n", cursor, accentStyle.Render(opt.key), icon, accentStyle.Render(opt.label)))
+		} else {
+			b.WriteString(fmt.Sprintf("%s%s  %s  %s\n", cursor, opt.key, icon, opt.label))
+		}
+	}
+
+	b.WriteString("\n" + dimStyle.Render("j/k navigate · 0-3 select · esc cancel"))
+
+	overlay := helpBoxStyle.Render(b.String())
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay,
+		lipgloss.WithWhitespaceChars(" "),
+		lipgloss.WithWhitespaceForeground(colorBlack),
+	)
+}
+
+func (m model) renderLabelModal() string {
+	dimStyle := lipgloss.NewStyle().Foreground(colorDim)
+	accentStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+
+	var context string
+	if m.labelBatchMode && len(m.selected) > 0 {
+		context = fmt.Sprintf("Labels (%d plans)", len(m.selected))
+	} else {
+		context = "Labels"
+	}
+
+	var b strings.Builder
+	b.WriteString(helpTitleStyle.Render(context) + "\n")
+
+	if !m.labelBatchMode {
+		if item, ok := m.list.SelectedItem().(plan); ok {
+			b.WriteString(dimStyle.Render(item.file) + "\n")
+		}
+	}
+	b.WriteString("\n")
+
+	filtered := m.filteredLabelChoices()
+
+	// Scroll windowing: show at most maxVisible items
+	maxVisible := 12
+	if len(filtered) > 0 || m.labelInput.Value() != "" {
+		scrollOff := 0
+		if len(filtered) > maxVisible {
+			scrollOff = m.labelCursor - maxVisible/2
+			if scrollOff < 0 {
+				scrollOff = 0
+			}
+			if scrollOff > len(filtered)-maxVisible {
+				scrollOff = len(filtered) - maxVisible
+			}
+		}
+		end := scrollOff + maxVisible
+		if end > len(filtered) {
+			end = len(filtered)
+		}
+
+		if scrollOff > 0 {
+			b.WriteString(dimStyle.Render("    ↑ "+strconv.Itoa(scrollOff)+" more") + "\n")
+		}
+
+		checkStyle := lipgloss.NewStyle().Bold(true).Foreground(colorGreen)
+		mixedStyle := lipgloss.NewStyle().Bold(true).Foreground(colorYellow)
+
+		for i := scrollOff; i < end; i++ {
+			l := filtered[i]
+			isCursor := i == m.labelCursor
+			isFlashing := m.labelFlashIdx == i && m.labelFlashTick > 0
+			toggled := m.labelToggled[l]
+			mixed := m.labelMixed[l]
+
+			// Icon: ✓ when toggled, - when mixed, · when off
+			icon := "·"
+			iconStyle := dimStyle
+			if mixed {
+				icon = "-"
+				iconStyle = mixedStyle
+			} else if toggled {
+				icon = "✓"
+				iconStyle = checkStyle
+			}
+
+			// Flash effect: alternate icon visibility
+			if isFlashing {
+				if m.labelFlashTick%2 == 0 {
+					icon = "·"
+					iconStyle = dimStyle
+				} else {
+					icon = "✓"
+					iconStyle = checkStyle
+				}
+			}
+
+			cursor := "  "
+			if isCursor {
+				cursor = accentStyle.Render("> ")
+			}
+
+			if isCursor || isFlashing {
+				b.WriteString(cursor + accentStyle.Render(icon) + " " + accentStyle.Render(l) + "\n")
+			} else {
+				b.WriteString(cursor + iconStyle.Render(icon) + " " + labelColor(l).Render(l) + "\n")
+			}
+		}
+
+		if end < len(filtered) {
+			b.WriteString(dimStyle.Render("    ↓ "+strconv.Itoa(len(filtered)-end)+" more") + "\n")
+		}
+	}
+
+	if len(filtered) == 0 && m.labelInput.Value() != "" {
+		b.WriteString(dimStyle.Render("  (new label: "+m.labelInput.Value()+")") + "\n")
+	}
+
+	if len(filtered) == 0 && m.labelInput.Value() == "" && len(m.labelChoices) == 0 {
+		b.WriteString(dimStyle.Render("  No labels yet. Type to create one.") + "\n")
+	}
+
+	b.WriteString("\n")
+	if m.labelInput.Value() != "" {
+		b.WriteString("filter: " + m.labelInput.View() + "\n")
+	}
+	b.WriteString(dimStyle.Render("type to filter/add · enter toggle+close · space multi-select"))
+
+	overlay := helpBoxStyle.Render(b.String())
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay,
+		lipgloss.WithWhitespaceChars(" "),
+		lipgloss.WithWhitespaceForeground(colorBlack),
+	)
 }

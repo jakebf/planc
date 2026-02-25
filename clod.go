@@ -73,7 +73,7 @@ var clodScript = []clodStep{
 // ─── Lifecycle ───────────────────────────────────────────────────────────────
 
 func (m *model) enterClod(p plan) tea.Cmd {
-	preamble := m.cfg.Preamble + p.file
+	preamble := m.cfg.PromptPrefix + p.file
 	m.clod = clodState{
 		active:   true,
 		tickID:   m.clod.tickID + 1,

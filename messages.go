@@ -18,7 +18,7 @@ type statusUpdatedMsg struct {
 	newPlan plan
 }
 
-type projectUpdatedMsg struct {
+type labelsUpdatedMsg struct {
 	plan plan
 }
 
@@ -49,15 +49,27 @@ type statusClearMsg struct {
 	id int
 }
 
+type notificationClearMsg struct {
+	id int
+}
+
+type copiedClearMsg struct {
+	id int
+}
+
 type changedSpinExpiredMsg struct {
 	id int
 }
+
+type editorLaunchedMsg struct{}
+
+type labelFlashMsg struct{}
 
 type errMsg struct {
 	err error
 }
 
-// batchDoneMsg is returned by batch status/project operations with the full
+// batchDoneMsg is returned by batch status/label operations with the full
 // updated plan list and a summary message for the status bar.
 type batchDoneMsg struct {
 	plans   []plan
