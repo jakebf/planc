@@ -32,27 +32,28 @@ const (
 )
 
 type plan struct {
-	status   string    // from frontmatter, or "" (unset)
-	project  string    // from frontmatter, or "" (deprecated; use labels)
-	labels   []string  // from frontmatter, or migrated from project
-	title    string    // from first # heading
-	created  time.Time // file birth time
-	modified time.Time // file modification time
-	file     string    // base filename
+	status      string    // from frontmatter, or "" (unset)
+	project     string    // from frontmatter, or "" (deprecated; use labels)
+	labels      []string  // from frontmatter, or migrated from project
+	title       string    // from first # heading
+	created     time.Time // file birth time
+	modified    time.Time // file modification time
+	file        string    // base filename
+	hasComments bool      // true if body contains comment blockquotes
 }
 
 var nextStatus = map[string]string{
-	"":        "pending",
-	"pending": "active",
-	"active":  "done",
-	"done":    "pending",
+	"":         "reviewed",
+	"reviewed": "active",
+	"active":   "done",
+	"done":     "reviewed",
 }
 
 func statusIcon(s string) string {
 	switch s {
 	case "active":
 		return "●"
-	case "pending":
+	case "reviewed":
 		return "○"
 	case "done":
 		return "✓"
@@ -163,14 +164,20 @@ func scanPlans(dir string) ([]plan, error) {
 		if len(labels) == 0 && project != "" {
 			labels = []string{project}
 		}
+		// Backward compat: migrate pending → reviewed
+		status := fm["status"]
+		if status == "pending" {
+			status = "reviewed"
+		}
 		plans = append(plans, plan{
-			status:   fm["status"],
-			project:  project,
-			labels:   labels,
-			title:    title,
-			created:  fileCreatedTime(path, info.ModTime()),
-			modified: info.ModTime(),
-			file:     e.Name(),
+			status:      status,
+			project:     project,
+			labels:      labels,
+			title:       title,
+			created:     fileCreatedTime(path, info.ModTime()),
+			modified:    info.ModTime(),
+			file:        e.Name(),
+			hasComments: bodyHasComments(body),
 		})
 	}
 	sortPlans(plans)

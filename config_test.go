@@ -175,7 +175,7 @@ func TestLoadConfigDefaultPromptPrefix(t *testing.T) {
 	}
 
 	loaded := loadConfig()
-	if loaded.PromptPrefix != "Read this plan file: " {
+	if loaded.PromptPrefix != "Read this plan file and review any comments: " {
 		t.Fatalf("PromptPrefix = %q, want default", loaded.PromptPrefix)
 	}
 }

@@ -158,7 +158,7 @@ func batchSetStatus(dir string, files []string, status string) tea.Cmd {
 		}
 		label := status
 		if label == "" {
-			label = "unset"
+			label = "new"
 		}
 		msg := fmt.Sprintf("%d plans → %s", len(files), label)
 		if failed > 0 {

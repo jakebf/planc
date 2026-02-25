@@ -41,6 +41,7 @@ type keyMap struct {
 	NextLabel key.Binding
 	Select      key.Binding
 	SelectAll   key.Binding
+	View        key.Binding
 	ScrollDown  key.Binding
 	ScrollUp    key.Binding
 	Help        key.Binding
@@ -62,11 +63,12 @@ func newKeyMap(cfg config) keyMap {
 		Labels:      key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "labels")),
 		Delete:      key.NewBinding(key.WithKeys("#"), key.WithHelp("#", "delete plan")),
 		Primary:     key.NewBinding(key.WithKeys("c"), key.WithHelp("c", commandLabel(cfg.Primary))),
-		Editor:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", commandLabel(cfg.Editor))),
+		Editor:      key.NewBinding(key.WithKeys("e"), key.WithHelp("e", commandLabel(cfg.Editor))),
 		Filter:      key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
 		CopyFile:    key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "copy path")),
 		PrevLabel: key.NewBinding(key.WithKeys("["), key.WithHelp("[/]", "cycle label filter")),
 		NextLabel: key.NewBinding(key.WithKeys("]")),
+		View:        key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "view")),
 		Select:      key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "select")),
 		SelectAll:   key.NewBinding(key.WithKeys("a")),
 		ScrollDown:  key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "page down")),
@@ -80,13 +82,13 @@ func newKeyMap(cfg config) keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Editor, k.Primary, k.CopyFile, k.OpenStatus, k.Labels, k.Select, k.Filter, k.Help}
+	return []key.Binding{k.View, k.Editor, k.Primary, k.CopyFile, k.OpenStatus, k.Labels, k.Select, k.Filter, k.Help}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		// Essentials
-		{k.Editor, k.Primary, k.CopyFile, k.OpenStatus, k.Labels, k.Select, k.ToggleDone, k.Filter, k.PrevLabel},
+		{k.View, k.Editor, k.Primary, k.CopyFile, k.OpenStatus, k.Labels, k.Select, k.ToggleDone, k.Filter, k.PrevLabel},
 		// Power user
 		{k.Navigate, k.SwitchPane, k.ScrollDown, k.ScrollUp, k.CycleStatus, k.SetStatus, k.Undo, k.Delete, k.Settings, k.Quit},
 	}
@@ -183,6 +185,7 @@ type model struct {
 	// Sub-states
 	clod            clodState
 	demo            demoState
+	comment         commentState
 	status          statusBarState
 	updateAvailable *updateAvailableMsg
 	releaseNotes    releaseNotesState
@@ -246,6 +249,12 @@ func newModel(plans []plan, dir string, cfg config, watcher *fsnotify.Watcher) m
 	li.Prompt = ""
 	li.CharLimit = 50
 	li.Width = 30
+
+	ci := textinput.New()
+	ci.Prompt = "comment: "
+	ci.CharLimit = 200
+	ci.Width = 60
+
 	rnvp := viewport.New(0, 0)
 
 	style := "dark"
@@ -276,6 +285,7 @@ func newModel(plans []plan, dir string, cfg config, watcher *fsnotify.Watcher) m
 		glamourStyle:    style,
 		status:          statusBarState{spinner: s},
 		labelInput:      li,
+		comment:         commentState{commentInput: ci},
 		releaseNotes:    releaseNotesState{viewport: rnvp},
 	}
 }
@@ -473,8 +483,19 @@ func (m model) firstSelectedPlan() plan {
 	return plan{}
 }
 
+func (m model) layoutWidths() (listW, previewW int) {
+	if m.comment.active {
+		listW = m.width * 25 / 100
+	} else {
+		listW = m.width * 40 / 100
+	}
+	previewW = m.width - listW
+	return
+}
+
 func (m model) previewW() int {
-	return m.width - (m.width * 40 / 100) - 2
+	_, pw := m.layoutWidths()
+	return pw - 2
 }
 
 // renderWindow renders the selected plan plus a few neighbors (±2) if not cached.
@@ -550,8 +571,8 @@ var statusOptions = []struct {
 	label  string
 	status string
 }{
-	{"0", "·", "unset", ""},
-	{"1", "○", "pending", "pending"},
+	{"0", "·", "new", ""},
+	{"1", "○", "reviewed", "reviewed"},
 	{"2", "●", "active", "active"},
 	{"3", "✓", "done", "done"},
 }
@@ -580,7 +601,7 @@ func (m model) handleStatusModal(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		return m, m.applyStatus(""), true
 	case msg.String() == "1":
 		m.settingStatus = false
-		return m, m.applyStatus("pending"), true
+		return m, m.applyStatus("reviewed"), true
 	case msg.String() == "2":
 		m.settingStatus = false
 		return m, m.applyStatus("active"), true
@@ -821,6 +842,217 @@ func (m model) applyLabelChanges() tea.Cmd {
 	return nil
 }
 
+// ─── Comment Mode ────────────────────────────────────────────────────────────
+
+func (m *model) scrollToTocEntry(entry tocEntry) {
+	offset := entry.renderLine - 2
+	if offset < 0 {
+		offset = 0
+	}
+	m.viewport.SetYOffset(offset)
+}
+
+// handlePreviewScroll handles j/k/pgdn/pgup scrolling in the viewport.
+// Shared between regular preview pane and comment mode preview.
+func (m model) handlePreviewScroll(msg tea.KeyMsg) (model, bool) {
+	switch msg.String() {
+	case "j", "down":
+		m.viewport.LineDown(1)
+		return m, true
+	case "k", "up":
+		m.viewport.LineUp(1)
+		return m, true
+	case "pgdown":
+		m.viewport.HalfViewDown()
+		return m, true
+	case "u", "pgup":
+		m.viewport.HalfViewUp()
+		return m, true
+	}
+	return m, false
+}
+
+func (m model) handleCommentEditKey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
+	switch {
+	case key.Matches(msg, m.keys.ForceQuit):
+		return m, tea.Quit, true
+	case msg.Type == tea.KeyEsc:
+		m.comment.editing = false
+		m.comment.commentInput.SetValue("")
+		return m, nil, true
+	case msg.Type == tea.KeyEnter:
+		text := strings.TrimSpace(m.comment.commentInput.Value())
+		if text == "" {
+			m.comment.editing = false
+			m.comment.commentInput.SetValue("")
+			return m, nil, true
+		}
+		m.comment.editing = false
+
+		entry := m.comment.toc[m.comment.editTarget]
+		var newBody string
+		if m.comment.editExisting {
+			newBody = replaceComment(m.comment.rawBody, entry.rawLine, text)
+		} else {
+			newBody = injectComment(m.comment.rawBody, entry.rawLine, text)
+			// Move cursor to the newly inserted comment (appears after the heading)
+			m.comment.cursor = m.comment.editTarget + 1
+		}
+
+		m.comment.commentInput.SetValue("")
+		return m, saveComment(m.dir, m.comment.planFile, newBody, m.glamourStyle, m.previewW()), true
+	default:
+		var cmd tea.Cmd
+		m.comment.commentInput, cmd = m.comment.commentInput.Update(msg)
+		return m, cmd, true
+	}
+}
+
+// commentNextFile navigates to the next (delta=1) or previous (delta=-1) plan file.
+func (m model) commentNextFile(delta int) (model, tea.Cmd, bool) {
+	items := m.list.Items()
+	if len(items) == 0 {
+		return m, nil, true
+	}
+	idx := m.list.Index()
+	newIdx := idx + delta
+	if newIdx < 0 || newIdx >= len(items) {
+		return m, nil, true
+	}
+	m.list.Select(newIdx)
+	m.prevIndex = newIdx // prevent viewport update from cursor change detection
+	if item, ok := items[newIdx].(plan); ok {
+		delete(m.previewCache, m.comment.planFile)
+		m.comment.planFile = item.file
+		m.comment.cursor = 0
+		m.comment.editing = false
+		m.focused = listPane // reset to ToC pane
+		return m, loadCommentMode(m.dir, item.file, m.glamourStyle, m.previewW()), true
+	}
+	return m, nil, true
+}
+
+func (m model) handleCommentKey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
+	// Text input mode — swallow everything
+	if m.comment.editing {
+		return m.handleCommentEditKey(msg)
+	}
+
+	switch {
+	case key.Matches(msg, m.keys.ForceQuit):
+		return m, tea.Quit, true
+	case key.Matches(msg, m.keys.Quit):
+		return m, tea.Quit, true
+
+	// Exit comment mode
+	case msg.Type == tea.KeyEsc:
+		m.comment.active = false
+		m.comment.toc = nil
+		delete(m.previewCache, m.comment.planFile)
+		return m, m.renderWindow(), true
+
+	// Pane switching
+	case key.Matches(msg, m.keys.SwitchPane):
+		if m.focused == listPane {
+			m.focused = previewPane
+		} else {
+			m.focused = listPane
+		}
+		return m, nil, true
+
+	// Help
+	case key.Matches(msg, m.keys.Help):
+		m.help.ShowAll = true
+		return m, nil, true
+
+	// Status and labels for current plan
+	case key.Matches(msg, m.keys.OpenStatus):
+		if item, ok := m.list.SelectedItem().(plan); ok {
+			m.settingStatus = true
+			m.statusModalCursor = statusCursorForStatus(item.status)
+		}
+		return m, nil, true
+	case key.Matches(msg, m.keys.Labels):
+		if _, ok := m.list.SelectedItem().(plan); ok {
+			m.openLabelModal(false)
+			return m, textinput.Blink, true
+		}
+		return m, nil, true
+
+	// File navigation
+	case msg.String() == "n":
+		return m.commentNextFile(1)
+	case msg.String() == "p":
+		return m.commentNextFile(-1)
+
+	// Editor — exit comment mode and let key fall through
+	case key.Matches(msg, m.keys.Editor):
+		m.comment.active = false
+		m.comment.toc = nil
+		delete(m.previewCache, m.comment.planFile)
+		return m, nil, false // fall through to editor handler
+	}
+
+	// Pane-specific keys
+	if m.focused == previewPane {
+		if mod, handled := m.handlePreviewScroll(msg); handled {
+			return mod, nil, true
+		}
+		switch msg.String() {
+		case "left":
+			m.focused = listPane
+			return m, nil, true
+		}
+	} else {
+		// ToC pane
+		switch {
+		case msg.String() == "j" || msg.String() == "down":
+			if m.comment.cursor < len(m.comment.toc)-1 {
+				m.comment.cursor++
+				m.scrollToTocEntry(m.comment.toc[m.comment.cursor])
+			}
+			return m, nil, true
+		case msg.String() == "k" || msg.String() == "up":
+			if m.comment.cursor > 0 {
+				m.comment.cursor--
+				m.scrollToTocEntry(m.comment.toc[m.comment.cursor])
+			}
+			return m, nil, true
+		case msg.Type == tea.KeyEnter:
+			if len(m.comment.toc) == 0 {
+				return m, nil, true
+			}
+			entry := m.comment.toc[m.comment.cursor]
+			m.comment.editing = true
+			m.comment.editTarget = m.comment.cursor
+			if entry.isComment {
+				m.comment.editExisting = true
+				m.comment.commentInput.SetValue(entry.text)
+			} else {
+				m.comment.editExisting = false
+				m.comment.commentInput.SetValue("")
+			}
+			m.comment.commentInput.Focus()
+			return m, textinput.Blink, true
+		case msg.String() == "d":
+			if len(m.comment.toc) == 0 {
+				return m, nil, true
+			}
+			entry := m.comment.toc[m.comment.cursor]
+			if !entry.isComment {
+				return m, nil, true
+			}
+			newBody := removeComment(m.comment.rawBody, entry.rawLine)
+			return m, saveComment(m.dir, m.comment.planFile, newBody, m.glamourStyle, m.previewW()), true
+		case msg.String() == "right":
+			m.focused = previewPane
+			return m, nil, true
+		}
+	}
+
+	return m, nil, true // swallow unhandled keys
+}
+
 // handleSelectMode handles keys when items are selected.
 // Returns handled=true if the key was consumed and the caller should return.
 func (m model) handleSelectMode(msg tea.KeyMsg) (model, tea.Cmd, bool) {
@@ -841,7 +1073,7 @@ func (m model) handleSelectMode(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		first := m.firstSelectedPlan()
 		target := nextStatus[first.status]
 		if target == "" {
-			target = "pending"
+			target = "reviewed"
 		}
 		files := m.selectedFiles()
 		return m, m.cmdBatchSetStatus(files, target), true
@@ -850,7 +1082,7 @@ func (m model) handleSelectMode(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		return m, m.cmdBatchSetStatus(files, ""), true
 	case msg.String() == "1":
 		files := m.selectedFiles()
-		return m, m.cmdBatchSetStatus(files, "pending"), true
+		return m, m.cmdBatchSetStatus(files, "reviewed"), true
 	case msg.String() == "2":
 		files := m.selectedFiles()
 		return m, m.cmdBatchSetStatus(files, "active"), true
@@ -958,7 +1190,7 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	}
 
 	// Space / shift+space — scroll preview regardless of pane focus
-	if !m.help.ShowAll && !m.confirmDelete && !m.settingStatus && !m.settingLabels && !m.list.SettingFilter() {
+	if !m.help.ShowAll && !m.confirmDelete && !m.settingStatus && !m.settingLabels && !m.list.SettingFilter() && !m.comment.editing {
 		switch {
 		case key.Matches(msg, m.keys.ScrollDown):
 			m.viewport.HalfViewDown()
@@ -969,8 +1201,8 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		}
 	}
 
-	// Demo toggle — accessible from any pane, blocked during modals/filters
-	if key.Matches(msg, m.keys.Demo) && !m.list.SettingFilter() && !m.list.IsFiltered() && !m.confirmDelete && !m.settingStatus && !m.settingLabels {
+	// Demo toggle — accessible from any pane, blocked during modals/filters/comment mode
+	if key.Matches(msg, m.keys.Demo) && !m.comment.active && !m.list.SettingFilter() && !m.list.IsFiltered() && !m.confirmDelete && !m.settingStatus && !m.settingLabels {
 		if m.demo.active {
 			m.exitDemoMode()
 			return m, m.renderWindow(), true
@@ -1001,6 +1233,15 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		return mod.(model), cmd, true
 	}
 
+	// Comment mode — after modals/help/scroll so those work naturally
+	if m.comment.active {
+		mod, cmd, handled := m.handleCommentKey(msg)
+		if handled {
+			return mod, cmd, true
+		}
+		m = mod // apply model changes (e.g. exiting comment mode for editor)
+	}
+
 
 	filtering := m.list.SettingFilter()
 
@@ -1010,21 +1251,27 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		}
 	}
 
+	// Enter / o — view mode (from either pane)
+	if (msg.Type == tea.KeyEnter || msg.String() == "o") && !filtering {
+		if m.demo.active {
+			return m, m.setNotification("Comments not available in demo", 2*time.Second), true
+		}
+		if item, ok := m.list.SelectedItem().(plan); ok {
+			m.comment.active = true
+			m.comment.planFile = item.file
+			m.comment.cursor = 0
+			m.comment.editing = false
+			m.focused = listPane // ToC pane
+			return m, loadCommentMode(m.dir, item.file, m.glamourStyle, m.previewW()), true
+		}
+	}
+
 	// Preview pane: scrolling
 	if m.focused == previewPane && !filtering {
+		if mod, handled := m.handlePreviewScroll(msg); handled {
+			return mod, nil, true
+		}
 		switch msg.String() {
-		case "j", "down":
-			m.viewport.LineDown(1)
-			return m, nil, true
-		case "k", "up":
-			m.viewport.LineUp(1)
-			return m, nil, true
-		case "pgdown":
-			m.viewport.HalfViewDown()
-			return m, nil, true
-		case "u", "pgup":
-			m.viewport.HalfViewUp()
-			return m, nil, true
 		case "left":
 			m.focused = listPane
 			return m, nil, true
@@ -1091,7 +1338,7 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			if item, ok := m.list.SelectedItem().(plan); ok {
 				status := nextStatus[item.status]
 				if status == "" {
-					status = "pending"
+					status = "reviewed"
 				}
 				return m, m.cmdSetStatus(item, status), true
 			}
@@ -1099,7 +1346,7 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	case msg.String() == "0" || msg.String() == "1" || msg.String() == "2" || msg.String() == "3":
 		if !filtering {
 			if item, ok := m.list.SelectedItem().(plan); ok {
-				status := map[string]string{"0": "", "1": "pending", "2": "active", "3": "done"}[msg.String()]
+				status := map[string]string{"0": "", "1": "reviewed", "2": "active", "3": "done"}[msg.String()]
 				if item.status == status {
 					return m, nil, true
 				}
@@ -1292,7 +1539,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.clod.active || msg.Action != tea.MouseActionPress {
 			return m, nil
 		}
-		listW := m.width * 40 / 100
+		listW, _ := m.layoutWidths()
+
+		// In comment mode: left pane scrolls ToC, right scrolls viewport
+		if m.comment.active {
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				if msg.X < listW {
+					if m.comment.cursor > 0 {
+						m.comment.cursor--
+						m.scrollToTocEntry(m.comment.toc[m.comment.cursor])
+					}
+				} else {
+					m.viewport.LineUp(3)
+				}
+			case tea.MouseButtonWheelDown:
+				if msg.X < listW {
+					if m.comment.cursor < len(m.comment.toc)-1 {
+						m.comment.cursor++
+						m.scrollToTocEntry(m.comment.toc[m.comment.cursor])
+					}
+				} else {
+					m.viewport.LineDown(3)
+				}
+			}
+			return m, nil
+		}
+
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
 			if msg.X < listW {
@@ -1326,7 +1599,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.ready = true
 
-		listW := m.width * 40 / 100
+		listW, _ := m.layoutWidths()
 		innerListW := listW - 2
 		innerPreviewW := m.previewW()
 		innerH := m.height - 3 // -2 for borders, -1 for hint bar
@@ -1387,7 +1660,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Inline indicator on the affected row (replaces date)
 		statusLabel := msg.newPlan.status
 		if statusLabel == "" {
-			statusLabel = "unset"
+			statusLabel = "new"
 		}
 		m.undoFiles[msg.newPlan.file] = statusLabel
 		m.undoID++
@@ -1536,6 +1809,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		// Refresh comment mode if the active file changed externally
+		if m.comment.active {
+			for _, f := range msg.files {
+				if f == m.comment.planFile {
+					cmds = append(cmds, loadCommentMode(m.dir, m.comment.planFile, m.glamourStyle, m.previewW()))
+					break
+				}
+			}
+		}
 		if m.watcher != nil {
 			cmds = append(cmds, watchDir(m.watcher))
 		}
@@ -1644,6 +1926,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.releaseNotes.version = msg.releaseNotes.version
 			m.releaseNotes.markdown = msg.releaseNotes.markdown
 			m.refreshReleaseNotesView()
+		}
+		return m, nil
+
+	case commentContentMsg:
+		if msg.file == m.comment.planFile && m.comment.active {
+			m.comment.toc = msg.toc
+			m.comment.rawBody = msg.rawBody
+			m.viewport.SetContent(msg.rendered)
+			if len(msg.toc) > 0 {
+				m.scrollToTocEntry(msg.toc[0])
+			}
+			// Also update the preview cache
+			m.previewCache[msg.file] = msg.rendered
+		}
+		return m, nil
+
+	case commentSavedMsg:
+		if msg.file == m.comment.planFile && m.comment.active {
+			m.comment.toc = msg.toc
+			m.comment.rawBody = msg.rawBody
+			m.viewport.SetContent(msg.rendered)
+			// Preserve cursor, clamp if needed
+			if m.comment.cursor >= len(msg.toc) {
+				m.comment.cursor = len(msg.toc) - 1
+			}
+			if m.comment.cursor < 0 {
+				m.comment.cursor = 0
+			}
+			if len(msg.toc) > 0 {
+				m.scrollToTocEntry(msg.toc[m.comment.cursor])
+			}
+			// Update preview cache
+			m.previewCache[msg.file] = msg.rendered
 		}
 		return m, nil
 

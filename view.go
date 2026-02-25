@@ -17,7 +17,7 @@ var (
 	colorDim     = lipgloss.Color("8")  // gray — secondary text, unfocused borders
 	colorFull    = lipgloss.Color("7")  // white — full help descriptions
 	colorGreen   = lipgloss.Color("10") // active status, welcome checkmark
-	colorYellow  = lipgloss.Color("11") // pending status, update notices
+	colorYellow  = lipgloss.Color("11") // reviewed status, update notices
 	colorMagenta = lipgloss.Color("13") // selection highlight, status bar messages
 )
 
@@ -153,14 +153,16 @@ func (m model) View() string {
 		return m.clodView()
 	}
 
-	// 40/60 split: list pane gets 40% of terminal width, preview gets the rest.
-	listW := m.width * 40 / 100
-	previewW := m.width - listW
+	listW, previewW := m.layoutWidths()
 
 	innerH := m.height - 3 // -2 for borders, -1 for hint bar
 
 	var leftStyle, rightStyle lipgloss.Style
-	if m.focused == listPane {
+	if m.comment.active {
+		// In comment mode: left (ToC) is focused, right (preview) is unfocused
+		leftStyle = focusedBorder.Width(listW - 2).Height(innerH)
+		rightStyle = unfocusedBorder.Width(previewW - 2).Height(innerH)
+	} else if m.focused == listPane {
 		leftStyle = focusedBorder.Width(listW - 2).Height(innerH)
 		rightStyle = unfocusedBorder.Width(previewW - 2).Height(innerH)
 	} else {
@@ -169,7 +171,9 @@ func (m model) View() string {
 	}
 
 	var leftContent string
-	if m.demo.active && len(m.list.Items()) == 0 {
+	if m.comment.active {
+		leftContent = renderTocPane(m, listW-2, innerH)
+	} else if m.demo.active && len(m.list.Items()) == 0 {
 		hint := lipgloss.NewStyle().Foreground(colorDim).
 			Width(listW - 4).Align(lipgloss.Center).
 			Render("All demo plans deleted\n\nPress d to exit demo mode")
@@ -192,7 +196,9 @@ func (m model) View() string {
 		leftContent = m.list.View()
 	}
 	previewTitle := ""
-	if item, ok := m.list.SelectedItem().(plan); ok {
+	if m.comment.active {
+		previewTitle = paneTitleStyle.Render(m.comment.planFile + " (comments)")
+	} else if item, ok := m.list.SelectedItem().(plan); ok {
 		previewTitle = paneTitleStyle.Render(item.file)
 	}
 	rightContent := previewTitle + "\n" + m.viewport.View()
@@ -203,7 +209,30 @@ func (m model) View() string {
 	)
 
 	var statusBar string
-	if len(m.selected) > 0 {
+	if m.comment.active {
+		hintStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+		dimStyle := lipgloss.NewStyle().Foreground(colorDim)
+		sep := dimStyle.Render(" | ")
+		if m.comment.editing {
+			statusBar = " " + m.comment.commentInput.View()
+		} else if m.focused == previewPane {
+			statusBar = " " +
+				hintStyle.Render("j/k") + dimStyle.Render(" scroll") + sep +
+				hintStyle.Render("tab") + dimStyle.Render(" ToC") + sep +
+				hintStyle.Render("n/p") + dimStyle.Render(" files") + sep +
+				hintStyle.Render("esc") + dimStyle.Render(" back")
+		} else {
+			statusBar = " " +
+				hintStyle.Render("enter") + dimStyle.Render(" comment") + sep
+			if len(m.comment.toc) > 0 && m.comment.cursor < len(m.comment.toc) && m.comment.toc[m.comment.cursor].isComment {
+				statusBar += hintStyle.Render("d") + dimStyle.Render(" delete comment") + sep
+			}
+			statusBar +=
+				hintStyle.Render("s/l") + dimStyle.Render(" status/labels") + sep +
+				hintStyle.Render("n/p") + dimStyle.Render(" files") + sep +
+				hintStyle.Render("esc") + dimStyle.Render(" back")
+		}
+	} else if len(m.selected) > 0 {
 		count := len(m.selected)
 		hintStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 		dimStyle := lipgloss.NewStyle().Foreground(colorDim)
@@ -297,8 +326,8 @@ func (m model) renderStatusModal(_ string) string {
 		switch opt.status {
 		case "active":
 			icon = activeStyle.Render(opt.icon)
-		case "pending":
-			icon = pendStyle.Render(opt.icon)
+		case "reviewed":
+			icon = reviewedStyle.Render(opt.icon)
 		case "done":
 			icon = doneStyle.Render(opt.icon)
 		default:

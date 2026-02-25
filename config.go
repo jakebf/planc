@@ -42,7 +42,7 @@ func newDefaultConfig() config {
 		PlansDir:     defaultPlansDir(),
 		Primary:      []string{"claude"},
 		Editor:       []string{"code"},
-		PromptPrefix: "Read this plan file: ",
+		PromptPrefix: "Read this plan file and review any comments: ",
 	}
 }
 
@@ -196,7 +196,8 @@ func showWelcome(scanner *bufio.Scanner) {
 	fmt.Println()
 	time.Sleep(300 * time.Millisecond)
 	fmt.Println("  " + key.Render("s") + dim.Render(" set status      ") + key.Render("l") + dim.Render(" set labels      ") + key.Render("x") + dim.Render(" batch select"))
-	fmt.Println("  " + key.Render("enter") + dim.Render(" edit plan   ") + key.Render("c") + dim.Render(" coding agent    ") + key.Render("?") + dim.Render(" all keybindings"))
+	fmt.Println("  " + key.Render("enter") + dim.Render(" view plan   ") + key.Render("e") + dim.Render(" edit plan       ") + key.Render("c") + dim.Render(" coding agent"))
+	fmt.Println("  " + key.Render("n/p") + dim.Render("   next/prev   ") + key.Render("?") + dim.Render(" all keybindings"))
 	fmt.Println()
 	time.Sleep(200 * time.Millisecond)
 	fmt.Println(dim.Render("  Status and labels are stored as YAML frontmatter."))
@@ -232,7 +233,7 @@ func runSetup(path string, current config, scanner *bufio.Scanner) config {
 
 	cfg := current
 	cfg.PlansDir = expandHome(prompt("Plans directory          ", current.PlansDir))
-	cfg.Editor = splitShellWords(prompt("Editor command  (enter) ", strings.Join(current.Editor, " ")))
+	cfg.Editor = splitShellWords(prompt("Editor command  (e)     ", strings.Join(current.Editor, " ")))
 	cfg.Primary = splitShellWords(prompt("Coding agent    (c)     ", strings.Join(current.Primary, " ")))
 	cfg.PromptPrefix = prompt("Prompt prefix           ", current.PromptPrefix)
 	fmt.Println()

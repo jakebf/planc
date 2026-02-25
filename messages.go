@@ -87,6 +87,16 @@ type releaseNotesMsg struct {
 	markdown string
 }
 
+type commentContentMsg struct {
+	file, rawBody, rendered string
+	toc                     []tocEntry
+}
+
+type commentSavedMsg struct {
+	file, rawBody, rendered string
+	toc                     []tocEntry
+}
+
 type startupUpdateMsg struct {
 	update       *updateAvailableMsg
 	releaseNotes *releaseNotesMsg

@@ -73,8 +73,8 @@ func TestBatchSetStatus(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected batchDoneMsg, got %T", msg)
 	}
-	if !strings.Contains(result.message, "unset") {
-		t.Errorf("expected message with 'unset', got %q", result.message)
+	if !strings.Contains(result.message, "new") {
+		t.Errorf("expected message with 'new', got %q", result.message)
 	}
 	for _, file := range []string{"plan-a.md", "plan-b.md"} {
 		data, _ := os.ReadFile(filepath.Join(dir, file))

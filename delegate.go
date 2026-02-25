@@ -17,7 +17,7 @@ import (
 
 var (
 	activeStyle  = lipgloss.NewStyle().Bold(true).Foreground(colorGreen)
-	pendStyle    = lipgloss.NewStyle().Bold(true).Foreground(colorYellow)
+	reviewedStyle    = lipgloss.NewStyle().Bold(true).Foreground(colorYellow)
 	doneStyle    = lipgloss.NewStyle().Foreground(colorDim)
 	unsetStyle   = lipgloss.NewStyle().Foreground(colorDim)
 	dateStyle    = lipgloss.NewStyle().Foreground(colorDim)
@@ -89,8 +89,8 @@ func (d planDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 		switch p.status {
 		case "active":
 			badge = activeStyle.Render("●")
-		case "pending":
-			badge = pendStyle.Render("○")
+		case "reviewed":
+			badge = reviewedStyle.Render("○")
 		case "done":
 			badge = doneStyle.Render("✓")
 		default:
@@ -105,10 +105,16 @@ func (d planDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 	// Inline indicators replace the date column
 	var date string
 	var dateW int
+	commentPrefix := ""
+	if p.hasComments {
+		commentPrefix = dateStyle.Render("💬") + " "
+	}
+	commentPrefixW := lipgloss.Width(commentPrefix)
+
 	if undoStatus, hasUndo := d.undoFiles[p.file]; hasUndo && !marked {
 		label := undoStatus
 		if label == "" {
-			label = "unset"
+			label = "new"
 		}
 		undoText := "→ " + label + " (u)"
 		if d.spinnerView != nil && *d.spinnerView != "" {
@@ -128,8 +134,8 @@ func (d planDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 		if strings.HasPrefix(displayDate, currentYear+"-") {
 			displayDate = displayDate[len(currentYear)+1:]
 		}
-		date = displayDate
-		dateW = lipgloss.Width(date) + 1 // +1 for leading space
+		date = commentPrefix + displayDate
+		dateW = lipgloss.Width(displayDate) + commentPrefixW + 1 // +1 for leading space
 	}
 
 	// Build label prefix and title, truncating trailing labels if needed.

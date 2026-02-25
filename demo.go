@@ -21,7 +21,7 @@ func demoPlans() []plan {
 		{status: "", labels: []string{"garden"}, title: "Raspberry Pi irrigation controller", created: now.Add(-1 * day), modified: now.Add(-1 * day), file: "optimistic-watering-pi.md"},
 		{status: "active", labels: []string{"lunch"}, title: "Descope back to a Slack bot", created: now.Add(-2 * day), file: "humble-returning-sandwich.md"},
 		{status: "active", labels: []string{"fittrack"}, title: "Add social challenges and leaderboard", created: now.Add(-3 * day), file: "competitive-flexing-sneaker.md"},
-		{status: "pending", labels: []string{"fittrack"}, title: "Add heart rate zone training", created: now.Add(-4 * day), file: "eager-pulsing-heart.md"},
+		{status: "reviewed", labels: []string{"fittrack"}, title: "Add heart rate zone training", created: now.Add(-4 * day), file: "eager-pulsing-heart.md"},
 		{status: "done", labels: []string{"planc"}, title: "Rewrite back in Go because lifetimes", created: now.Add(-6 * day), file: "relieved-idiomatic-gopher.md"},
 		{status: "active", labels: []string{"agent"}, title: "Write comprehensive postmortem", created: now.Add(-8 * day), file: "reflective-documenting-octopus.md"},
 		{status: "done", labels: []string{"lunch"}, title: "Pivot to full delivery logistics platform", created: now.Add(-9 * day), file: "ambitious-routing-van.md"},
@@ -100,7 +100,7 @@ func (s demoStore) batchSetStatus(files []string, status string) tea.Cmd {
 		}
 		label := status
 		if label == "" {
-			label = "unset"
+			label = "new"
 		}
 		return batchDoneMsg{
 			plans:   updated,

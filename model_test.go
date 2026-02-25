@@ -16,7 +16,7 @@ func testPlans() []plan {
 	return []plan{
 		{status: "active", labels: []string{"kokua"}, title: "Material component migration playbook", created: now.Add(-1 * day), file: "humming-marinating-narwhal.md"},
 		{status: "active", labels: []string{"pulse"}, title: "Synthetic EHR database generator", created: now.Add(-7 * day), file: "deep-crunching-sprout.md"},
-		{status: "pending", labels: []string{"atlas"}, title: "Route optimization service", created: now.Add(-9 * day), file: "bright-sailing-otter.md"},
+		{status: "reviewed", labels: []string{"atlas"}, title: "Route optimization service", created: now.Add(-9 * day), file: "bright-sailing-otter.md"},
 		{status: "done", labels: []string{"orion"}, title: "Legacy API deprecation tracker", created: now.Add(-22 * day), file: "calm-drifting-whale.md"},
 	}
 }
