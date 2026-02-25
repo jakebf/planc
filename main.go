@@ -24,7 +24,7 @@ func getVersion() string {
 
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "--help" || os.Args[1] == "-h") {
-		fmt.Println("planc — a TUI for browsing Claude Code plans")
+		fmt.Println("planc — a tiny TUI for browsing and annotating AI agent plans")
 		fmt.Println()
 		fmt.Println("Usage: planc [flags]")
 		fmt.Println()
@@ -64,19 +64,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	plans, scanErr := scanPlans(dir)
-	if scanErr != nil {
-		if os.IsNotExist(scanErr) {
-			if err := os.MkdirAll(dir, 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating plans directory: %v\n", err)
-				os.Exit(1)
-			}
-			plans = nil
-		} else {
-			fmt.Fprintf(os.Stderr, "Error scanning plans: %v\n", scanErr)
+	// Ensure agent plans directory exists
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating plans directory: %v\n", err)
 			os.Exit(1)
 		}
 	}
+
+	plans, scanErr := scanAllPlans(dir, cfg.ProjectPlanGlob)
+	if scanErr != nil {
+		fmt.Fprintf(os.Stderr, "Error scanning plans: %v\n", scanErr)
+		os.Exit(1)
+	}
+
+	projectDirs := resolveProjectDirs(cfg.ProjectPlanGlob)
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -86,9 +88,15 @@ func main() {
 		if err := watcher.Add(dir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not watch directory: %v\n", err)
 		}
+		for _, d := range projectDirs {
+			if err := watcher.Add(d); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not watch directory %s: %v\n", d, err)
+			}
+		}
 	}
 
 	m := newModel(plans, dir, cfg, watcher)
+	m.projectDirs = projectDirs
 	if len(os.Args) > 1 && os.Args[1] == "--demo" {
 		m.enterDemoMode()
 	}

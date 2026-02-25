@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -84,32 +83,31 @@ func renderMarkdown(file, markdown, style string, width int) tea.Cmd {
 	}
 }
 
-func renderPlan(dir, file, style string, width int) tea.Cmd {
+func renderPlan(p plan, style string, width int) tea.Cmd {
 	return func() tea.Msg {
-		path := filepath.Join(dir, file)
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(p.path())
 		if err != nil {
-			return planContentMsg{file: file, content: fmt.Sprintf("Error reading %s: %v", file, err)}
+			return planContentMsg{file: p.path(), content: fmt.Sprintf("Error reading %s: %v", p.file, err)}
 		}
 		_, body := parseFrontmatter(string(data))
-		return planContentMsg{file: file, content: glamourRender(body, style, width)}
+		return planContentMsg{file: p.path(), content: glamourRender(body, style, width)}
 	}
 }
 
-func reloadPlans(dir string) tea.Msg {
-	plans, err := scanPlans(dir)
+func reloadAllPlans(agentDir, projectGlob string) tea.Msg {
+	plans, err := scanAllPlans(agentDir, projectGlob)
 	if err != nil {
 		return errMsg{err}
 	}
 	return reloadMsg{plans: plans}
 }
 
-func deletePlan(dir string, p plan) tea.Cmd {
+func deletePlan(agentDir, projectGlob string, p plan) tea.Cmd {
 	return func() tea.Msg {
-		if err := os.Remove(filepath.Join(dir, p.file)); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(p.path()); err != nil && !os.IsNotExist(err) {
 			return errMsg{fmt.Errorf("could not delete file: %w", err)}
 		}
-		plans, err := scanPlans(dir)
+		plans, err := scanAllPlans(agentDir, projectGlob)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -117,9 +115,9 @@ func deletePlan(dir string, p plan) tea.Cmd {
 	}
 }
 
-func setPlanStatus(dir string, p plan, newStatus string) tea.Cmd {
+func setPlanStatus(p plan, newStatus string) tea.Cmd {
 	return func() tea.Msg {
-		if err := setFrontmatter(filepath.Join(dir, p.file), map[string]string{"status": newStatus}); err != nil {
+		if err := setFrontmatter(p.path(), map[string]string{"status": newStatus}); err != nil {
 			return errMsg{err}
 		}
 		updated := p
@@ -128,13 +126,13 @@ func setPlanStatus(dir string, p plan, newStatus string) tea.Cmd {
 	}
 }
 
-func setLabels(dir string, p plan, labels []string) tea.Cmd {
+func setLabels(p plan, labels []string) tea.Cmd {
 	return func() tea.Msg {
 		updates := map[string]string{
 			"labels":  labelsString(labels),
 			"project": "", // migrate away from project
 		}
-		if err := setFrontmatter(filepath.Join(dir, p.file), updates); err != nil {
+		if err := setFrontmatter(p.path(), updates); err != nil {
 			return errMsg{err}
 		}
 		updated := p
@@ -144,15 +142,15 @@ func setLabels(dir string, p plan, labels []string) tea.Cmd {
 	}
 }
 
-func batchSetStatus(dir string, files []string, status string) tea.Cmd {
+func batchSetStatus(agentDir, projectGlob string, paths []string, status string) tea.Cmd {
 	return func() tea.Msg {
 		var failed int
-		for _, file := range files {
-			if err := setFrontmatter(filepath.Join(dir, file), map[string]string{"status": status}); err != nil {
+		for _, p := range paths {
+			if err := setFrontmatter(p, map[string]string{"status": status}); err != nil {
 				failed++
 			}
 		}
-		plans, err := scanPlans(dir)
+		plans, err := scanAllPlans(agentDir, projectGlob)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -160,24 +158,24 @@ func batchSetStatus(dir string, files []string, status string) tea.Cmd {
 		if label == "" {
 			label = "new"
 		}
-		msg := fmt.Sprintf("%d plans → %s", len(files), label)
+		msg := fmt.Sprintf("%d plans → %s", len(paths), label)
 		if failed > 0 {
 			msg += fmt.Sprintf(" (%d failed)", failed)
 		}
 		return batchDoneMsg{
 			plans:   plans,
-			files:   files,
+			files:   paths,
 			message: msg,
 		}
 	}
 }
 
-func batchUpdateLabels(dir string, files []string, add []string, remove []string) tea.Cmd {
+func batchUpdateLabels(agentDir, projectGlob string, paths []string, add []string, remove []string) tea.Cmd {
 	return func() tea.Msg {
 		var failed int
-		for _, file := range files {
+		for _, p := range paths {
 			// Read current labels from file
-			data, err := os.ReadFile(filepath.Join(dir, file))
+			data, err := os.ReadFile(p)
 			if err != nil {
 				failed++
 				continue
@@ -192,11 +190,11 @@ func batchUpdateLabels(dir string, files []string, add []string, remove []string
 				"labels":  labelsString(newLabels),
 				"project": "", // migrate away from project
 			}
-			if err := setFrontmatter(filepath.Join(dir, file), updates); err != nil {
+			if err := setFrontmatter(p, updates); err != nil {
 				failed++
 			}
 		}
-		plans, err := scanPlans(dir)
+		plans, err := scanAllPlans(agentDir, projectGlob)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -207,13 +205,13 @@ func batchUpdateLabels(dir string, files []string, add []string, remove []string
 		if len(remove) > 0 {
 			parts = append(parts, "-"+strings.Join(remove, ","))
 		}
-		msg := fmt.Sprintf("%d plans %s", len(files), strings.Join(parts, " "))
+		msg := fmt.Sprintf("%d plans %s", len(paths), strings.Join(parts, " "))
 		if failed > 0 {
 			msg += fmt.Sprintf(" (%d failed)", failed)
 		}
 		return batchDoneMsg{
 			plans:   plans,
-			files:   files,
+			files:   paths,
 			message: msg,
 		}
 	}
@@ -259,28 +257,30 @@ func runBackgroundEditor(args []string) tea.Cmd {
 // ─── diskStore ───────────────────────────────────────────────────────────────
 
 // diskStore implements planStore by reading and writing real plan files.
+// It stores the agent dir and project glob so it can rescan all sources after mutations.
 type diskStore struct {
-	dir string
+	agentDir    string
+	projectGlob string
 }
 
 func (s diskStore) setStatus(p plan, status string) tea.Cmd {
-	return setPlanStatus(s.dir, p, status)
+	return setPlanStatus(p, status)
 }
 
 func (s diskStore) deletePlan(p plan) tea.Cmd {
-	return deletePlan(s.dir, p)
+	return deletePlan(s.agentDir, s.projectGlob, p)
 }
 
 func (s diskStore) setLabels(p plan, labels []string) tea.Cmd {
-	return setLabels(s.dir, p, labels)
+	return setLabels(p, labels)
 }
 
-func (s diskStore) batchSetStatus(files []string, status string) tea.Cmd {
-	return batchSetStatus(s.dir, files, status)
+func (s diskStore) batchSetStatus(paths []string, status string) tea.Cmd {
+	return batchSetStatus(s.agentDir, s.projectGlob, paths, status)
 }
 
-func (s diskStore) batchUpdateLabels(files []string, add []string, remove []string) tea.Cmd {
-	return batchUpdateLabels(s.dir, files, add, remove)
+func (s diskStore) batchUpdateLabels(paths []string, add []string, remove []string) tea.Cmd {
+	return batchUpdateLabels(s.agentDir, s.projectGlob, paths, add, remove)
 }
 
 // watchDir watches the plans directory for .md file changes.
@@ -298,7 +298,7 @@ func watchDir(watcher *fsnotify.Watcher) tea.Cmd {
 					continue
 				}
 				if ev.Has(fsnotify.Write) || ev.Has(fsnotify.Create) || ev.Has(fsnotify.Remove) {
-					changed := map[string]bool{filepath.Base(ev.Name): true}
+					changed := map[string]bool{ev.Name: true}
 					time.Sleep(100 * time.Millisecond)
 				drain:
 					for {
@@ -308,7 +308,7 @@ func watchDir(watcher *fsnotify.Watcher) tea.Cmd {
 								break drain
 							}
 							if strings.HasSuffix(extra.Name, ".md") {
-								changed[filepath.Base(extra.Name)] = true
+								changed[extra.Name] = true
 							}
 						default:
 							break drain

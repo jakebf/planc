@@ -12,8 +12,8 @@ func TestSetPlanStatusRoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "test-plan.md")
 	writeFile(t, path, "# Test Plan\n\nContent here\n")
 
-	p := plan{status: "", project: "", title: "Test Plan", file: "test-plan.md"}
-	cmd := setPlanStatus(dir, p, "active")
+	p := plan{dir: dir, status: "", project: "", title: "Test Plan", file: "test-plan.md"}
+	cmd := setPlanStatus(p, "active")
 	msg := cmd()
 	updated, ok := msg.(statusUpdatedMsg)
 	if !ok {
@@ -39,8 +39,9 @@ func TestBatchSetStatus(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "plan-b.md"), "---\nstatus: pending\n---\n# Plan B\n\nContent B\n")
 	writeFile(t, filepath.Join(dir, "plan-c.md"), "# Plan C\n\nContent C\n")
 
-	// Batch set status to active
-	cmd := batchSetStatus(dir, []string{"plan-a.md", "plan-b.md"}, "active")
+	// Batch set status to active (using full paths)
+	paths := []string{filepath.Join(dir, "plan-a.md"), filepath.Join(dir, "plan-b.md")}
+	cmd := batchSetStatus(dir, "", paths, "active")
 	msg := cmd()
 	result, ok := msg.(batchDoneMsg)
 	if !ok {
@@ -67,7 +68,7 @@ func TestBatchSetStatus(t *testing.T) {
 	}
 
 	// Batch unset status
-	cmd = batchSetStatus(dir, []string{"plan-a.md", "plan-b.md"}, "")
+	cmd = batchSetStatus(dir, "", paths, "")
 	msg = cmd()
 	result, ok = msg.(batchDoneMsg)
 	if !ok {
@@ -91,7 +92,8 @@ func TestBatchUpdateLabels(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "plan-a.md"), "# Plan A\n\nContent\n")
 	writeFile(t, filepath.Join(dir, "plan-b.md"), "---\nlabels: existing\n---\n# Plan B\n\nContent\n")
 
-	cmd := batchUpdateLabels(dir, []string{"plan-a.md", "plan-b.md"}, []string{"myproject"}, nil)
+	paths := []string{filepath.Join(dir, "plan-a.md"), filepath.Join(dir, "plan-b.md")}
+	cmd := batchUpdateLabels(dir, "", paths, []string{"myproject"}, nil)
 	msg := cmd()
 	result, ok := msg.(batchDoneMsg)
 	if !ok {
@@ -122,7 +124,7 @@ func TestSetLabelsWritesFrontmatter(t *testing.T) {
 	path := filepath.Join(dir, "plan-a.md")
 	writeFile(t, path, "# Plan A\n\nBody\n")
 
-	cmd := setLabels(dir, plan{file: "plan-a.md"}, []string{"atlas", "infra"})
+	cmd := setLabels(plan{dir: dir, file: "plan-a.md"}, []string{"atlas", "infra"})
 	msg := cmd()
 	updated, ok := msg.(labelsUpdatedMsg)
 	if !ok {
@@ -151,7 +153,7 @@ func TestDeletePlanRemovesFileAndReloads(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "plan-a.md"), "# Plan A\n")
 	writeFile(t, filepath.Join(dir, "plan-b.md"), "# Plan B\n")
 
-	cmd := deletePlan(dir, plan{file: "plan-a.md"})
+	cmd := deletePlan(dir, "", plan{dir: dir, file: "plan-a.md"})
 	msg := cmd()
 	reload, ok := msg.(reloadMsg)
 	if !ok {
@@ -165,9 +167,14 @@ func TestDeletePlanRemovesFileAndReloads(t *testing.T) {
 	}
 }
 
-func TestReloadPlansReturnsErrForMissingDir(t *testing.T) {
-	msg := reloadPlans(filepath.Join(t.TempDir(), "missing"))
-	if _, ok := msg.(errMsg); !ok {
-		t.Fatalf("expected errMsg, got %T", msg)
+func TestReloadAllPlansEmptyForMissingDir(t *testing.T) {
+	msg := reloadAllPlans(filepath.Join(t.TempDir(), "missing"), "")
+	// Missing agent dir is non-fatal; returns empty plan list (project glob may still have results)
+	reload, ok := msg.(reloadMsg)
+	if !ok {
+		t.Fatalf("expected reloadMsg, got %T", msg)
+	}
+	if len(reload.plans) != 0 {
+		t.Fatalf("expected 0 plans, got %d", len(reload.plans))
 	}
 }

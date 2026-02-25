@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -32,6 +33,7 @@ const (
 )
 
 type plan struct {
+	dir         string    // directory containing this plan file
 	status      string    // from frontmatter, or "" (unset)
 	project     string    // from frontmatter, or "" (deprecated; use labels)
 	labels      []string  // from frontmatter, or migrated from project
@@ -40,6 +42,10 @@ type plan struct {
 	modified    time.Time // file modification time
 	file        string    // base filename
 	hasComments bool      // true if body contains comment blockquotes
+}
+
+func (p plan) path() string {
+	return filepath.Join(p.dir, p.file)
 }
 
 var nextStatus = map[string]string{
@@ -170,6 +176,7 @@ func scanPlans(dir string) ([]plan, error) {
 			status = "reviewed"
 		}
 		plans = append(plans, plan{
+			dir:         dir,
 			status:      status,
 			project:     project,
 			labels:      labels,
@@ -179,6 +186,116 @@ func scanPlans(dir string) ([]plan, error) {
 			file:        e.Name(),
 			hasComments: bodyHasComments(body),
 		})
+	}
+	sortPlans(plans)
+	return plans, nil
+}
+
+// skipDirs lists directory names that are typically very large and
+// will never contain user plan files. Skipping them during glob
+// resolution avoids walking hundreds of thousands of entries
+// (e.g. node_modules trees) that make startup unacceptably slow.
+var skipDirs = map[string]bool{
+	"node_modules":    true,
+	".git":            true,
+	".hg":             true,
+	".svn":            true,
+	".venv":           true,
+	"venv":            true,
+	"__pycache__":     true,
+	".cache":          true,
+	".next":           true,
+	".nuxt":           true,
+	".output":         true,
+	".angular":        true,
+	".gradle":         true,
+	".cargo":          true,
+	".npm":            true,
+	".pnpm":           true,
+	".tox":            true,
+	".mypy_cache":     true,
+	".pytest_cache":   true,
+	".generated":      true,
+	"target":          true,
+	"dist":            true,
+	"build":           true,
+	"coverage":        true,
+	".turbo":          true,
+	".parcel-cache":   true,
+	".docusaurus":     true,
+}
+
+// resolveProjectDirs expands a glob pattern (supporting **) and returns
+// matching directories. Uses filepath.WalkDir from the static prefix of
+// the pattern, skipping known heavy directories for performance.
+func resolveProjectDirs(glob string) []string {
+	if glob == "" {
+		return nil
+	}
+	glob = expandHome(glob)
+
+	base := globBase(glob)
+	if _, err := os.Stat(base); err != nil {
+		return nil
+	}
+
+	var dirs []string
+	filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if path != base && skipDirs[d.Name()] {
+			return filepath.SkipDir
+		}
+		matched, _ := doublestar.PathMatch(glob, path)
+		if matched {
+			dirs = append(dirs, path)
+		}
+		return nil
+	})
+	return dirs
+}
+
+// globBase returns the longest directory prefix of a glob pattern
+// that contains no wildcard characters (* ? [ {).
+func globBase(pattern string) string {
+	for i, c := range pattern {
+		if c == '*' || c == '?' || c == '[' || c == '{' {
+			dir := pattern[:i]
+			if j := strings.LastIndex(dir, string(filepath.Separator)); j >= 0 {
+				return pattern[:j]
+			}
+			return "."
+		}
+	}
+	return pattern
+}
+
+// scanAllPlans scans the agent plans dir and any project dirs matched by glob.
+// Plans are deduplicated by full path and sorted by creation time descending.
+func scanAllPlans(agentDir string, projectGlob string) ([]plan, error) {
+	plans, err := scanPlans(agentDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	seen := make(map[string]bool)
+	for _, p := range plans {
+		seen[p.path()] = true
+	}
+	for _, dir := range resolveProjectDirs(projectGlob) {
+		dirPlans, err := scanPlans(dir)
+		if err != nil {
+			continue
+		}
+		for _, p := range dirPlans {
+			if !seen[p.path()] {
+				seen[p.path()] = true
+				plans = append(plans, p)
+			}
+		}
 	}
 	sortPlans(plans)
 	return plans, nil
@@ -306,10 +423,10 @@ func filterPlans(plans []plan, showDone bool, keepFiles map[string]bool, labelFi
 		if labelFilter != "" && !hasLabel(p.labels, labelFilter) {
 			continue
 		}
-		if !showDone && p.status == "done" && !keepFiles[p.file] {
+		if !showDone && p.status == "done" && !keepFiles[p.path()] {
 			continue
 		}
-		if !showDone && p.status == "" && !keepFiles[p.file] {
+		if !showDone && p.status == "" && !keepFiles[p.path()] {
 			// Show unset plans modified after install (they're likely new)
 			if installed.IsZero() || p.modified.Before(installed) {
 				continue

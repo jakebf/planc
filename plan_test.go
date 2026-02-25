@@ -318,6 +318,67 @@ func TestSetLabelsWritesMigration(t *testing.T) {
 	}
 }
 
+func TestGlobBase(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    string
+	}{
+		{"/home/jake/code/**/plans", "/home/jake/code"},
+		{"/home/jake/code/*/plans", "/home/jake/code"},
+		{"/home/jake/code/plans", "/home/jake/code/plans"},
+		{"**/plans", "."},
+		{"/a/b/c", "/a/b/c"},
+		{"/a/b[0-9]/c", "/a"},
+	}
+	for _, tt := range tests {
+		got := globBase(tt.pattern)
+		if got != tt.want {
+			t.Errorf("globBase(%q) = %q, want %q", tt.pattern, got, tt.want)
+		}
+	}
+}
+
+func TestResolveProjectDirsSkipsHeavy(t *testing.T) {
+	// Create a temp tree: base/proj/plans, base/proj/node_modules/plans
+	base := t.TempDir()
+	os.MkdirAll(filepath.Join(base, "proj", "plans"), 0755)
+	os.MkdirAll(filepath.Join(base, "proj", "node_modules", "deep", "plans"), 0755)
+	os.MkdirAll(filepath.Join(base, "other", "plans"), 0755)
+	os.MkdirAll(filepath.Join(base, "other", ".git", "plans"), 0755)
+
+	dirs := resolveProjectDirs(filepath.Join(base, "**", "plans"))
+	found := make(map[string]bool)
+	for _, d := range dirs {
+		found[d] = true
+	}
+
+	want := filepath.Join(base, "proj", "plans")
+	if !found[want] {
+		t.Errorf("expected %s in results, got %v", want, dirs)
+	}
+	want2 := filepath.Join(base, "other", "plans")
+	if !found[want2] {
+		t.Errorf("expected %s in results, got %v", want2, dirs)
+	}
+
+	// Should NOT include plans inside node_modules or .git
+	bad1 := filepath.Join(base, "proj", "node_modules", "deep", "plans")
+	if found[bad1] {
+		t.Errorf("should skip node_modules, but found %s", bad1)
+	}
+	bad2 := filepath.Join(base, "other", ".git", "plans")
+	if found[bad2] {
+		t.Errorf("should skip .git, but found %s", bad2)
+	}
+}
+
+func TestResolveProjectDirsEmpty(t *testing.T) {
+	dirs := resolveProjectDirs("")
+	if len(dirs) != 0 {
+		t.Errorf("expected empty for empty glob, got %v", dirs)
+	}
+}
+
 func TestRecentLabels(t *testing.T) {
 	plans := testPlans()
 	recent := recentLabels(plans)

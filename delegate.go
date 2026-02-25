@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -43,10 +44,11 @@ func labelColor(name string) lipgloss.Style {
 }
 
 type planDelegate struct {
+	agentDir    string
 	selected    map[string]bool
 	changed     map[string]bool
-	undoFiles   map[string]string // filename → new status string (shown inline during undo window)
-	copiedFiles map[string]bool   // filenames with "Copied!" inline indicator
+	undoFiles   map[string]string // path → new status string (shown inline during undo window)
+	copiedFiles map[string]bool   // paths with "Copied!" inline indicator
 	spinnerView *string
 }
 
@@ -60,8 +62,8 @@ func (d planDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 		return
 	}
 
-	marked := d.selected[p.file]
-	changed := d.changed[p.file]
+	marked := d.selected[p.path()]
+	changed := d.changed[p.path()]
 
 	bar := normalBar
 	if index == m.Index() {
@@ -105,13 +107,14 @@ func (d planDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 	// Inline indicators replace the date column
 	var date string
 	var dateW int
-	commentPrefix := ""
-	if p.hasComments {
-		commentPrefix = dateStyle.Render("💬") + " "
-	}
-	commentPrefixW := lipgloss.Width(commentPrefix)
+	var commentIndicator string // rendered separately so emoji stays visible
 
-	if undoStatus, hasUndo := d.undoFiles[p.file]; hasUndo && !marked {
+	commentPrefixW := 0
+	if p.hasComments {
+		commentPrefixW = lipgloss.Width("💬 ")
+	}
+
+	if undoStatus, hasUndo := d.undoFiles[p.path()]; hasUndo && !marked {
 		label := undoStatus
 		if label == "" {
 			label = "new"
@@ -123,7 +126,7 @@ func (d planDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 			date = lipgloss.NewStyle().Foreground(colorAccent).Render(undoText)
 		}
 		dateW = lipgloss.Width(date) + 1
-	} else if d.copiedFiles[p.file] {
+	} else if d.copiedFiles[p.path()] {
 		date = lipgloss.NewStyle().Foreground(colorAccent).Render("Copied!")
 		dateW = lipgloss.Width(date) + 1
 	} else {
@@ -134,8 +137,18 @@ func (d planDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 		if strings.HasPrefix(displayDate, currentYear+"-") {
 			displayDate = displayDate[len(currentYear)+1:]
 		}
-		date = commentPrefix + displayDate
-		dateW = lipgloss.Width(displayDate) + commentPrefixW + 1 // +1 for leading space
+		// For project plans (non-agent dir), show parent dir name before date
+		var dirPrefixW int
+		if p.dir != "" && d.agentDir != "" && p.dir != d.agentDir {
+			dirText := filepath.Base(filepath.Dir(p.dir)) + "/" + filepath.Base(p.dir) + " "
+			dirPrefixW = lipgloss.Width(dirText)
+			commentIndicator = dateStyle.Render(dirText) + commentIndicator
+		}
+		date = displayDate
+		dateW = dirPrefixW + lipgloss.Width(displayDate) + commentPrefixW + 1 // +1 for leading space
+		if p.hasComments {
+			commentIndicator += lipgloss.NewStyle().Foreground(colorYellow).Render("💬 ")
+		}
 	}
 
 	// Build label prefix and title, truncating trailing labels if needed.
@@ -220,5 +233,5 @@ func (d planDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 		styledText = " " + title + pad
 	}
 
-	fmt.Fprintf(w, "%s%s%s %s ", bar, badge, styledText, dateStyle.Render(date))
+	fmt.Fprintf(w, "%s%s%s %s%s ", bar, badge, styledText, commentIndicator, dateStyle.Render(date))
 }

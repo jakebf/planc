@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -176,17 +177,17 @@ func (m model) View() string {
 	} else if m.demo.active && len(m.list.Items()) == 0 {
 		hint := lipgloss.NewStyle().Foreground(colorDim).
 			Width(listW - 4).Align(lipgloss.Center).
-			Render("All demo plans deleted\n\nPress d to exit demo mode")
+			Render("All demo plans deleted\n\nPress D to exit demo mode")
 		leftContent = lipgloss.Place(listW-2, innerH, lipgloss.Center, lipgloss.Center, hint)
 	} else if !m.demo.active && len(m.allPlans) == 0 {
 		hint := lipgloss.NewStyle().Foreground(colorDim).
 			Width(listW - 4).Align(lipgloss.Center).
-			Render("No plans yet\n\nUse plan mode in Claude Code\nand get planning!\n\n~/.claude/plans/\n\nd  try demo mode")
+			Render("No plans yet\n\nUse plan mode in your\ncoding agent and get planning!\n\n" + contractHome(m.dir) + "/\n\nD  try demo mode")
 		leftContent = lipgloss.Place(listW-2, innerH, lipgloss.Center, lipgloss.Center, hint)
 	} else if !m.showDone && len(m.list.Items()) == 0 {
 		msg := "No active plans\n\na show all  ·  s set status  ·  l set labels\n\nStatus and labels are stored as YAML\nfrontmatter in your plan files."
 		if !m.demo.active {
-			msg += "\n\nd  try demo mode"
+			msg += "\n\nD  try demo mode"
 		}
 		hint := lipgloss.NewStyle().Foreground(colorDim).
 			Width(listW - 4).Align(lipgloss.Center).
@@ -197,9 +198,22 @@ func (m model) View() string {
 	}
 	previewTitle := ""
 	if m.comment.active {
-		previewTitle = paneTitleStyle.Render(m.comment.planFile + " (comments)")
+		commentDir := filepath.Dir(m.comment.planFile)
+		commentBase := filepath.Base(m.comment.planFile)
+		if commentDir != m.dir {
+			dirPart := contractHome(commentDir) + "/"
+			previewTitle = lipgloss.NewStyle().Foreground(colorDim).Render(dirPart) + paneTitleStyle.Render(commentBase)
+		} else {
+			previewTitle = paneTitleStyle.Render(commentBase)
+		}
 	} else if item, ok := m.list.SelectedItem().(plan); ok {
-		previewTitle = paneTitleStyle.Render(item.file)
+		if item.dir != "" && item.dir != m.dir {
+			// Project plan: ghost the directory, normal color for filename
+			dirPart := contractHome(item.dir) + "/"
+			previewTitle = lipgloss.NewStyle().Foreground(colorDim).Render(dirPart) + paneTitleStyle.Render(item.file)
+		} else {
+			previewTitle = paneTitleStyle.Render(item.file)
+		}
 	}
 	rightContent := previewTitle + "\n" + m.viewport.View()
 

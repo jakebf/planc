@@ -21,41 +21,13 @@ Show
 # Let the viewer take in the UI
 Sleep 2s
 
-# Browse plans
+# Browse down to a plan
 Type "j"
 Sleep 1.5s
 Type "j"
 Sleep 2s
 
-# Set status via modal — mark as done
-Type "s"
-Sleep 2.5s
-Type "j"
-Sleep 1.5s
-Enter
-Sleep 3s
-
-# Browse down through the list
-Type "j"
-Sleep 1.5s
-Type "j"
-Sleep 1.5s
-Type "j"
-Sleep 2s
-
-# Show all plans (toggle to see everything including done)
-Type "a"
-Sleep 3s
-
-# Browse around a bit
-Type "j"
-Sleep 1.5s
-Type "j"
-Sleep 1.5s
-Type "k"
-Sleep 2s
-
-# Add an existing label to this plan
+# Add a label
 Type "l"
 Sleep 2.5s
 Type "j"
@@ -63,32 +35,50 @@ Sleep 1s
 Enter
 Sleep 3.5s
 
-# Cycle label filter — pause longer so viewer notices list changing
-Type "]"
-Sleep 3s
-Type "]"
-Sleep 3s
-Type "]"
+# Enter view mode (comment mode)
+Enter
 Sleep 3s
 
-# Switch to preview pane with arrow key
-Right
-Sleep 2s
+# Browse the table of contents
 Type "j"
-Sleep 1s
+Sleep 1.5s
 Type "j"
-Sleep 1s
-Type "j"
-Sleep 2s
+Sleep 1.5s
 
-# Back to list
-Left
+# Add a comment on this heading
+Enter
+Sleep 1.5s
+Type "This is great, Clod! xoxox"
 Sleep 2s
+Enter
+Sleep 3.5s
 
-# Launch Claude Code
-Type "k"
+# Change status to done via modal
+Type "s"
+Sleep 2.5s
+Type "j"
+Sleep 0.5s
+Type "j"
+Sleep 0.5s
+Type "j"
 Sleep 1s
 Enter
+Sleep 3s
+
+# Exit view mode back to list
+Escape
+Sleep 2.5s
+
+# Browse to another plan
+Type "j"
+Sleep 1.5s
+Type "j"
+Sleep 1.5s
+Type "k"
+Sleep 2s
+
+# Open in Claude Code
+Type "c"
 Sleep 10s
 
 # Exit back to main screen

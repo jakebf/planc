@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -303,15 +302,48 @@ func sortStrings(s []string) {
 // ─── Async Commands ──────────────────────────────────────────────────────────
 
 // loadCommentMode reads a plan file, extracts ToC, renders markdown,
-// and computes render line mappings.
-func loadCommentMode(dir, file, style string, width int) tea.Cmd {
+// and computes render line mappings. planPath is the full path to the plan file.
+func loadCommentMode(planPath, style string, width int) tea.Cmd {
 	return func() tea.Msg {
-		path := filepath.Join(dir, file)
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(planPath)
 		if err != nil {
-			return commentContentMsg{file: file}
+			return commentContentMsg{file: planPath}
 		}
 		_, body := parseFrontmatter(string(data))
+		toc := extractToc(body)
+		rendered := glamourRender(body, style, width)
+		computeRenderLines(toc, rendered)
+		return commentContentMsg{
+			file:     planPath,
+			rawBody:  body,
+			rendered: rendered,
+			toc:      toc,
+		}
+	}
+}
+
+// saveComment writes updated body to disk, re-extracts ToC, and re-renders.
+// planPath is the full path to the plan file.
+func saveComment(planPath, newBody, style string, width int) tea.Cmd {
+	return func() tea.Msg {
+		if err := writeCommentBody(planPath, newBody); err != nil {
+			return errMsg{err}
+		}
+		toc := extractToc(newBody)
+		rendered := glamourRender(newBody, style, width)
+		computeRenderLines(toc, rendered)
+		return commentSavedMsg{
+			file:     planPath,
+			rawBody:  newBody,
+			rendered: rendered,
+			toc:      toc,
+		}
+	}
+}
+
+// loadCommentModeFromContent builds comment mode state from in-memory content.
+func loadCommentModeFromContent(file, body, style string, width int) tea.Cmd {
+	return func() tea.Msg {
 		toc := extractToc(body)
 		rendered := glamourRender(body, style, width)
 		computeRenderLines(toc, rendered)
@@ -324,13 +356,10 @@ func loadCommentMode(dir, file, style string, width int) tea.Cmd {
 	}
 }
 
-// saveComment writes updated body to disk, re-extracts ToC, and re-renders.
-func saveComment(dir, file, newBody, style string, width int) tea.Cmd {
+// saveCommentDemo updates in-memory content and returns a commentSavedMsg.
+func saveCommentDemo(file, newBody string, content map[string]string, style string, width int) tea.Cmd {
 	return func() tea.Msg {
-		path := filepath.Join(dir, file)
-		if err := writeCommentBody(path, newBody); err != nil {
-			return errMsg{err}
-		}
+		content[file] = newBody
 		toc := extractToc(newBody)
 		rendered := glamourRender(newBody, style, width)
 		computeRenderLines(toc, rendered)

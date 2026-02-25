@@ -17,13 +17,14 @@ import (
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 type config struct {
-	PlansDir     string   `json:"plans_dir"`                    // path to plans directory
-	Primary      []string `json:"primary"`                      // enter: main AI assistant
-	Editor       []string `json:"editor"`                       // e: text editor
-	PromptPrefix string   `json:"prompt_prefix"`                // prefix for primary command path arg
-	EditorMode   string   `json:"editor_mode,omitempty"`        // "background", "foreground", or "" (auto)
-	ShowAll      bool     `json:"show_all,omitempty"`           // persist active vs all filter
-	Installed    string   `json:"installed,omitempty"`          // RFC3339 timestamp of first setup
+	PlansDir        string   `json:"plans_dir"`                    // path to agent plans directory
+	ProjectPlanGlob string   `json:"project_plans_glob,omitempty"` // glob pattern for project plan directories
+	Primary         []string `json:"primary"`                      // enter: main AI assistant
+	Editor          []string `json:"editor"`                       // e: text editor
+	PromptPrefix    string   `json:"prompt_prefix"`                // prefix for primary command path arg
+	EditorMode      string   `json:"editor_mode,omitempty"`        // "background", "foreground", or "" (auto)
+	ShowAll         bool     `json:"show_all,omitempty"`           // persist active vs all filter
+	Installed       string   `json:"installed,omitempty"`          // RFC3339 timestamp of first setup
 }
 
 func defaultPlansDir() string {
@@ -62,6 +63,18 @@ func expandHome(path string) string {
 			return path
 		}
 		return filepath.Join(home, path[2:])
+	}
+	return path
+}
+
+// contractHome replaces the user's home directory prefix with "~/" for display.
+func contractHome(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	if rel, ok := strings.CutPrefix(path, home+string(filepath.Separator)); ok {
+		return "~/" + rel
 	}
 	return path
 }
@@ -187,7 +200,7 @@ func showWelcome(scanner *bufio.Scanner) {
 	}
 	fmt.Println()
 	time.Sleep(400 * time.Millisecond)
-	fmt.Println(dim.Render("  A tiny TUI for your Claude Code plans."))
+	fmt.Println(dim.Render("  A tiny TUI for browsing and annotating AI agent plans."))
 	fmt.Println()
 
 	time.Sleep(400 * time.Millisecond)
@@ -232,7 +245,24 @@ func runSetup(path string, current config, scanner *bufio.Scanner) config {
 	}
 
 	cfg := current
-	cfg.PlansDir = expandHome(prompt("Plans directory          ", current.PlansDir))
+
+	cfg.PlansDir = expandHome(prompt("Agent plans path        ", current.PlansDir))
+
+	// Project plans glob: show suggestion hint but default to empty
+	projectDefault := current.ProjectPlanGlob
+	if projectDefault == "" {
+		fmt.Printf("%s %s: ", promptStyle.Render("Project plans (glob)    "), dimStyle.Render("[]")+" "+dimStyle.Render("e.g. ~/code/**/plans"))
+	} else {
+		fmt.Printf("%s %s: ", promptStyle.Render("Project plans (glob)    "), dimStyle.Render("["+projectDefault+"]"))
+	}
+	if scanner.Scan() {
+		if line := strings.TrimSpace(scanner.Text()); line != "" {
+			cfg.ProjectPlanGlob = line
+		} else {
+			cfg.ProjectPlanGlob = projectDefault
+		}
+	}
+
 	cfg.Editor = splitShellWords(prompt("Editor command  (e)     ", strings.Join(current.Editor, " ")))
 	cfg.Primary = splitShellWords(prompt("Coding agent    (c)     ", strings.Join(current.Primary, " ")))
 	cfg.PromptPrefix = prompt("Prompt prefix           ", current.PromptPrefix)

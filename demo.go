@@ -84,17 +84,17 @@ func (s demoStore) setLabels(p plan, labels []string) tea.Cmd {
 	}
 }
 
-func (s demoStore) batchSetStatus(files []string, status string) tea.Cmd {
+func (s demoStore) batchSetStatus(paths []string, status string) tea.Cmd {
 	plans := *s.plans
 	return func() tea.Msg {
-		fileSet := make(map[string]bool)
-		for _, f := range files {
-			fileSet[f] = true
+		pathSet := make(map[string]bool)
+		for _, p := range paths {
+			pathSet[p] = true
 		}
 		updated := make([]plan, len(plans))
 		copy(updated, plans)
 		for i, p := range updated {
-			if fileSet[p.file] {
+			if pathSet[p.path()] {
 				updated[i].status = status
 			}
 		}
@@ -104,23 +104,23 @@ func (s demoStore) batchSetStatus(files []string, status string) tea.Cmd {
 		}
 		return batchDoneMsg{
 			plans:   updated,
-			files:   files,
-			message: fmt.Sprintf("%d plans → %s", len(files), label),
+			files:   paths,
+			message: fmt.Sprintf("%d plans → %s", len(paths), label),
 		}
 	}
 }
 
-func (s demoStore) batchUpdateLabels(files []string, add []string, remove []string) tea.Cmd {
+func (s demoStore) batchUpdateLabels(paths []string, add []string, remove []string) tea.Cmd {
 	plans := *s.plans
 	return func() tea.Msg {
-		fileSet := make(map[string]bool)
-		for _, f := range files {
-			fileSet[f] = true
+		pathSet := make(map[string]bool)
+		for _, p := range paths {
+			pathSet[p] = true
 		}
 		updated := make([]plan, len(plans))
 		copy(updated, plans)
 		for i, p := range updated {
-			if fileSet[p.file] {
+			if pathSet[p.path()] {
 				updated[i].labels = applyLabelChanges(p.labels, add, remove)
 				updated[i].project = ""
 			}
@@ -134,8 +134,8 @@ func (s demoStore) batchUpdateLabels(files []string, add []string, remove []stri
 		}
 		return batchDoneMsg{
 			plans:   updated,
-			files:   files,
-			message: fmt.Sprintf("%d plans %s", len(files), strings.Join(parts, " ")),
+			files:   paths,
+			message: fmt.Sprintf("%d plans %s", len(paths), strings.Join(parts, " ")),
 		}
 	}
 }
@@ -165,13 +165,13 @@ func (m *model) exitDemoMode() {
 	m.demo.active = false
 	m.demo.plans = nil
 	m.demo.content = nil
-	m.store = diskStore{dir: m.dir}
+	m.store = diskStore{agentDir: m.dir, projectGlob: m.cfg.ProjectPlanGlob}
 	m.showDone = m.cfg.ShowAll
 	m.labelFilter = ""
 	m.lastStatusChange = nil
 	m.batchKeepFiles = nil
 	// Re-scan from disk since watcher was ignoring changes during demo
-	if plans, err := scanPlans(m.dir); err == nil {
+	if plans, err := scanAllPlans(m.dir, m.cfg.ProjectPlanGlob); err == nil {
 		m.allPlans = plans
 		sortPlans(m.allPlans)
 	}

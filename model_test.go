@@ -171,7 +171,7 @@ func TestSelectToggle(t *testing.T) {
 	m2, _ := m.Update(xKey)
 	m = m2.(model)
 
-	if !m.selected[plans[0].file] {
+	if !m.selected[plans[0].path()] {
 		t.Errorf("expected %q to be selected after first x", plans[0].file)
 	}
 	if m.list.Index() != 0 {
@@ -183,7 +183,7 @@ func TestSelectToggle(t *testing.T) {
 	m = m2.(model)
 	m2, _ = m.Update(xKey)
 	m = m2.(model)
-	if !m.selected[plans[1].file] {
+	if !m.selected[plans[1].path()] {
 		t.Errorf("expected %q to be selected after second x", plans[1].file)
 	}
 	if len(m.selected) != 2 {
@@ -193,7 +193,7 @@ func TestSelectToggle(t *testing.T) {
 	// Press x again on same item — should deselect
 	m2, _ = m.Update(xKey)
 	m = m2.(model)
-	if m.selected[plans[1].file] {
+	if m.selected[plans[1].path()] {
 		t.Errorf("expected %q to be deselected after toggle", plans[1].file)
 	}
 	if len(m.selected) != 1 {
@@ -315,8 +315,8 @@ func TestStatusUpdateKeepsDoneVisibleUntilUndoExpires(t *testing.T) {
 	m = m2.(model)
 
 	m2, _ = m.Update(statusUpdatedMsg{
-		oldPlan: plan{status: "active", file: "plan-a.md"},
-		newPlan: plan{status: "done", file: "plan-a.md"},
+		oldPlan: plan{dir: dir, status: "active", file: "plan-a.md"},
+		newPlan: plan{dir: dir, status: "done", file: "plan-a.md"},
 	})
 	m = m2.(model)
 
@@ -396,7 +396,7 @@ func TestBatchLabelModalEscNoChanges(t *testing.T) {
 	// Select both plans
 	for _, item := range m.list.Items() {
 		if p, ok := item.(plan); ok {
-			m.selected[p.file] = true
+			m.selected[p.path()] = true
 		}
 	}
 

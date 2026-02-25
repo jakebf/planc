@@ -77,7 +77,7 @@ func newKeyMap(cfg config) keyMap {
 		Settings:    key.NewBinding(key.WithKeys(","), key.WithHelp(",", "settings")),
 		Quit:        key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
 		ForceQuit:   key.NewBinding(key.WithKeys("ctrl+c")),
-		Demo:        key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "demo mode")),
+		Demo:        key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "demo mode")),
 	}
 }
 
@@ -136,9 +136,10 @@ type model struct {
 	glamourStyle string            // "dark" or "light" based on terminal background
 
 	// Plan data
-	allPlans      []plan
-	dir           string
-	cfg           config
+	allPlans    []plan
+	dir         string // primary agent plans directory
+	projectDirs []string
+	cfg         config
 	installed     time.Time // first-run timestamp; controls unset-plan visibility
 	store         planStore
 	watcher       *fsnotify.Watcher
@@ -208,6 +209,26 @@ func (m model) visiblePlans() []plan {
 	return filterPlans(m.allPlans, m.showDone, m.keepFiles(), m.labelFilter, m.installed)
 }
 
+// syncHasComments updates the hasComments flag on the plan matching planPath
+// in both allPlans and the visible list. Called after comment edits so the
+// 💬 indicator in the list view stays in sync.
+func (m *model) syncHasComments(planPath string, has bool) {
+	plans := m.planSource()
+	for i, p := range *plans {
+		if p.path() == planPath {
+			(*plans)[i].hasComments = has
+			break
+		}
+	}
+	for i, item := range m.list.Items() {
+		if p, ok := item.(plan); ok && p.path() == planPath {
+			p.hasComments = has
+			m.list.SetItem(i, p)
+			break
+		}
+	}
+}
+
 func newModel(plans []plan, dir string, cfg config, watcher *fsnotify.Watcher) model {
 	sel := make(map[string]bool)
 	chg := make(map[string]bool)
@@ -219,7 +240,7 @@ func newModel(plans []plan, dir string, cfg config, watcher *fsnotify.Watcher) m
 	}
 	sortPlans(plans)
 	var spinView string
-	delegate := planDelegate{selected: sel, changed: chg, undoFiles: uf, copiedFiles: cf, spinnerView: &spinView}
+	delegate := planDelegate{agentDir: dir, selected: sel, changed: chg, undoFiles: uf, copiedFiles: cf, spinnerView: &spinView}
 	visible := filterPlans(plans, cfg.ShowAll, nil, "", installed)
 	l := list.New(plansToItems(visible), delegate, 0, 0)
 	l.Title = "Planc Active · All"
@@ -281,7 +302,7 @@ func newModel(plans []plan, dir string, cfg config, watcher *fsnotify.Watcher) m
 		cfg:             cfg,
 		installed:       installed,
 		selected:        sel,
-		store:           diskStore{dir: dir},
+		store:           diskStore{agentDir: dir, projectGlob: cfg.ProjectPlanGlob},
 		glamourStyle:    style,
 		status:          statusBarState{spinner: s},
 		labelInput:      li,
@@ -312,7 +333,7 @@ func (m model) Init() tea.Cmd {
 func (m model) keepFiles() map[string]bool {
 	keep := make(map[string]bool)
 	if m.lastStatusChange != nil {
-		keep[m.lastStatusChange.newPlan.file] = true
+		keep[m.lastStatusChange.newPlan.path()] = true
 	}
 	for _, f := range m.batchKeepFiles {
 		keep[f] = true
@@ -380,7 +401,7 @@ func (m *model) restoreTitle() {
 		maxW := m.list.Width() - 2
 		baseW := lipgloss.Width(left)
 		// Pick the longest demo hint that still leaves room for tabs
-		for _, hint := range []string{"demo · press d to exit", "demo · d", "demo"} {
+		for _, hint := range []string{"demo · press D to exit", "demo · D", "demo"} {
 			if baseW+1+len(hint)+1+tabsW <= maxW {
 				left += " " + ghost.Render(hint)
 				break
@@ -410,16 +431,16 @@ func (m *model) restoreTitle() {
 
 func (m model) selectedFile() string {
 	if item, ok := m.list.SelectedItem().(plan); ok {
-		return item.file
+		return item.path()
 	}
 	return ""
 }
 
-// selectFile moves the cursor to the item matching file, or stays at the
-// current index if file is not found (clamped to list length).
-func (m *model) selectFile(file string) {
+// selectFile moves the cursor to the item matching the given path, or stays at the
+// current index if not found (clamped to list length).
+func (m *model) selectFile(path string) {
 	for i, item := range m.list.Items() {
-		if p, ok := item.(plan); ok && p.file == file {
+		if p, ok := item.(plan); ok && p.path() == path {
 			m.list.Select(i)
 			return
 		}
@@ -455,7 +476,7 @@ func (m *model) pruneSelection() {
 	visible := make(map[string]bool)
 	for _, item := range m.list.Items() {
 		if p, ok := item.(plan); ok {
-			visible[p.file] = true
+			visible[p.path()] = true
 		}
 	}
 	for f := range m.selected {
@@ -463,6 +484,24 @@ func (m *model) pruneSelection() {
 			delete(m.selected, f)
 		}
 	}
+}
+
+// cmdLoadComment returns the appropriate loadCommentMode command for the current mode.
+func (m model) cmdLoadComment(planPath string) tea.Cmd {
+	if m.demo.active {
+		file := filepath.Base(planPath)
+		body := m.demo.content[file]
+		return loadCommentModeFromContent(planPath, body, m.glamourStyle, m.previewW())
+	}
+	return loadCommentMode(planPath, m.glamourStyle, m.previewW())
+}
+
+// cmdSaveComment returns the appropriate saveComment command for the current mode.
+func (m model) cmdSaveComment(newBody string) tea.Cmd {
+	if m.demo.active {
+		return saveCommentDemo(m.comment.planFile, newBody, m.demo.content, m.glamourStyle, m.previewW())
+	}
+	return saveComment(m.comment.planFile, newBody, m.glamourStyle, m.previewW())
 }
 
 func (m model) selectedFiles() []string {
@@ -476,7 +515,7 @@ func (m model) selectedFiles() []string {
 // firstSelectedPlan returns the first selected plan in visible list order.
 func (m model) firstSelectedPlan() plan {
 	for _, item := range m.list.Items() {
-		if p, ok := item.(plan); ok && m.selected[p.file] {
+		if p, ok := item.(plan); ok && m.selected[p.path()] {
 			return p
 		}
 	}
@@ -516,7 +555,7 @@ func (m model) renderWindow() tea.Cmd {
 		if !ok {
 			continue
 		}
-		if _, cached := m.previewCache[p.file]; cached {
+		if _, cached := m.previewCache[p.path()]; cached {
 			continue
 		}
 		if m.demo.active {
@@ -524,9 +563,9 @@ func (m model) renderWindow() tea.Cmd {
 			if !ok {
 				md = "*No preview available*"
 			}
-			cmds = append(cmds, renderMarkdown(p.file, md, m.glamourStyle, m.previewW()))
+			cmds = append(cmds, renderMarkdown(p.path(), md, m.glamourStyle, m.previewW()))
 		} else {
-			cmds = append(cmds, renderPlan(m.dir, p.file, m.glamourStyle, m.previewW()))
+			cmds = append(cmds, renderPlan(p, m.glamourStyle, m.previewW()))
 		}
 	}
 	if len(cmds) == 0 {
@@ -651,7 +690,7 @@ func (m *model) openLabelModal(batchMode bool) {
 		counts := make(map[string]int)
 		total := 0
 		for _, item := range m.list.Items() {
-			if p, ok := item.(plan); ok && m.selected[p.file] {
+			if p, ok := item.(plan); ok && m.selected[p.path()] {
 				total++
 				for _, l := range p.labels {
 					counts[l]++
@@ -900,7 +939,7 @@ func (m model) handleCommentEditKey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		}
 
 		m.comment.commentInput.SetValue("")
-		return m, saveComment(m.dir, m.comment.planFile, newBody, m.glamourStyle, m.previewW()), true
+		return m, m.cmdSaveComment(newBody), true
 	default:
 		var cmd tea.Cmd
 		m.comment.commentInput, cmd = m.comment.commentInput.Update(msg)
@@ -923,11 +962,11 @@ func (m model) commentNextFile(delta int) (model, tea.Cmd, bool) {
 	m.prevIndex = newIdx // prevent viewport update from cursor change detection
 	if item, ok := items[newIdx].(plan); ok {
 		delete(m.previewCache, m.comment.planFile)
-		m.comment.planFile = item.file
+		m.comment.planFile = item.path()
 		m.comment.cursor = 0
 		m.comment.editing = false
 		m.focused = listPane // reset to ToC pane
-		return m, loadCommentMode(m.dir, item.file, m.glamourStyle, m.previewW()), true
+		return m, m.cmdLoadComment(item.path()), true
 	}
 	return m, nil, true
 }
@@ -946,6 +985,7 @@ func (m model) handleCommentKey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 
 	// Exit comment mode
 	case msg.Type == tea.KeyEsc:
+		m.syncHasComments(m.comment.planFile, bodyHasComments(m.comment.rawBody))
 		m.comment.active = false
 		m.comment.toc = nil
 		delete(m.previewCache, m.comment.planFile)
@@ -987,6 +1027,7 @@ func (m model) handleCommentKey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 
 	// Editor — exit comment mode and let key fall through
 	case key.Matches(msg, m.keys.Editor):
+		m.syncHasComments(m.comment.planFile, bodyHasComments(m.comment.rawBody))
 		m.comment.active = false
 		m.comment.toc = nil
 		delete(m.previewCache, m.comment.planFile)
@@ -1043,7 +1084,7 @@ func (m model) handleCommentKey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 				return m, nil, true
 			}
 			newBody := removeComment(m.comment.rawBody, entry.rawLine)
-			return m, saveComment(m.dir, m.comment.planFile, newBody, m.glamourStyle, m.previewW()), true
+			return m, m.cmdSaveComment(newBody), true
 		case msg.String() == "right":
 			m.focused = previewPane
 			return m, nil, true
@@ -1095,22 +1136,18 @@ func (m model) handleSelectMode(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	case msg.String() == "a":
 		for _, item := range m.list.Items() {
 			if p, ok := item.(plan); ok {
-				m.selected[p.file] = true
+				m.selected[p.path()] = true
 			}
 		}
 		return m, nil, true
 	case key.Matches(msg, m.keys.CopyFile):
 		if !m.demo.active {
-			files := m.selectedFiles()
-			var paths []string
-			for _, f := range files {
-				paths = append(paths, filepath.Join(m.dir, f))
-			}
+			paths := m.selectedFiles()
 			if err := clipboard.WriteAll(strings.Join(paths, ", ")); err != nil {
 				return m, func() tea.Msg { return errMsg{fmt.Errorf("clipboard: %w", err)} }, true
 			}
 			clear(m.copiedFiles)
-			for _, f := range files {
+			for _, f := range paths {
 				m.copiedFiles[f] = true
 			}
 			m.copiedID++
@@ -1121,10 +1158,10 @@ func (m model) handleSelectMode(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		}
 	case key.Matches(msg, m.keys.Select):
 		if item, ok := m.list.SelectedItem().(plan); ok {
-			if m.selected[item.file] {
-				delete(m.selected, item.file)
+			if m.selected[item.path()] {
+				delete(m.selected, item.path())
 			} else {
-				m.selected[item.file] = true
+				m.selected[item.path()] = true
 			}
 		}
 		return m, nil, true
@@ -1139,8 +1176,8 @@ func (m model) handleSelectMode(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 // should short-circuit Update (modals, commands, etc.) and handled=false for
 // keys that should fall through to list.Update for default navigation/search.
 func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
-	// Settings — accessible from anywhere
-	if key.Matches(msg, m.keys.Settings) {
+	// Settings — accessible from anywhere except text input modes
+	if key.Matches(msg, m.keys.Settings) && !m.comment.editing && !m.settingLabels && !m.clod.active && !m.list.SettingFilter() {
 		m.help.ShowAll = false
 		m.confirmDelete = false
 		m.settingLabels = false
@@ -1253,16 +1290,13 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 
 	// Enter / o — view mode (from either pane)
 	if (msg.Type == tea.KeyEnter || msg.String() == "o") && !filtering {
-		if m.demo.active {
-			return m, m.setNotification("Comments not available in demo", 2*time.Second), true
-		}
 		if item, ok := m.list.SelectedItem().(plan); ok {
 			m.comment.active = true
-			m.comment.planFile = item.file
+			m.comment.planFile = item.path()
 			m.comment.cursor = 0
 			m.comment.editing = false
 			m.focused = listPane // ToC pane
-			return m, loadCommentMode(m.dir, item.file, m.glamourStyle, m.previewW()), true
+			return m, m.cmdLoadComment(item.path()), true
 		}
 	}
 
@@ -1456,12 +1490,11 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	case key.Matches(msg, m.keys.CopyFile):
 		if !filtering && !m.demo.active {
 			if item, ok := m.list.SelectedItem().(plan); ok {
-				path := filepath.Join(m.dir, item.file)
-				if err := clipboard.WriteAll(path); err != nil {
+				if err := clipboard.WriteAll(item.path()); err != nil {
 					return m, func() tea.Msg { return errMsg{fmt.Errorf("clipboard: %w", err)} }, true
 				}
 				clear(m.copiedFiles)
-				m.copiedFiles[item.file] = true
+				m.copiedFiles[item.path()] = true
 				m.copiedID++
 				id := m.copiedID
 				return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
@@ -1472,7 +1505,7 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	case key.Matches(msg, m.keys.Select):
 		if !filtering {
 			if item, ok := m.list.SelectedItem().(plan); ok {
-				m.selected[item.file] = true
+				m.selected[item.path()] = true
 			}
 		}
 	}
@@ -1502,17 +1535,18 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		}
 		if len(cmdArgs) > 0 {
 			if item, ok := m.list.SelectedItem().(plan); ok {
-				args := expandCommand(cmdArgs, filepath.Join(m.dir, item.file), prefix)
+				args := expandCommand(cmdArgs, item.path(), prefix)
 				if isEditor && effectiveEditorMode(m.cfg) == "background" {
 					return m, runBackgroundEditor(args), true
 				}
 				c := shellCommand(args...)
-				dir := m.dir
+				agentDir := m.dir
+				projectGlob := m.cfg.ProjectPlanGlob
 				return m, tea.ExecProcess(c, func(err error) tea.Msg {
 					if err != nil {
 						return errMsg{fmt.Errorf("command failed: %w", err)}
 					}
-					return reloadPlans(dir)
+					return reloadAllPlans(agentDir, projectGlob)
 				}), true
 			}
 		}
@@ -1647,7 +1681,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastStatusChange = &msg
 		plans := m.planSource()
 		for i, p := range *plans {
-			if p.file == msg.newPlan.file {
+			if p.path() == msg.newPlan.path() {
 				updated := msg.newPlan
 				updated.modified = time.Now()
 				(*plans)[i] = updated
@@ -1656,13 +1690,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		visible := m.visiblePlans()
 		m.list.SetItems(plansToItems(visible))
-		m.selectFile(msg.newPlan.file)
+		m.selectFile(msg.newPlan.path())
 		// Inline indicator on the affected row (replaces date)
 		statusLabel := msg.newPlan.status
 		if statusLabel == "" {
 			statusLabel = "new"
 		}
-		m.undoFiles[msg.newPlan.file] = statusLabel
+		m.undoFiles[msg.newPlan.path()] = statusLabel
 		m.undoID++
 		undoID := m.undoID
 		return m, tea.Batch(
@@ -1675,7 +1709,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case labelsUpdatedMsg:
 		plans := m.planSource()
 		for i, p := range *plans {
-			if p.file == msg.plan.file {
+			if p.path() == msg.plan.path() {
 				updated := msg.plan
 				updated.modified = time.Now()
 				(*plans)[i] = updated
@@ -1684,7 +1718,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		visible := m.visiblePlans()
 		m.list.SetItems(plansToItems(visible))
-		m.selectFile(msg.plan.file)
+		m.selectFile(msg.plan.path())
 		label := strings.Join(msg.plan.labels, ", ")
 		if label == "" {
 			label = "cleared"
@@ -1756,7 +1790,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.demo.active {
 			prevFile := m.selectedFile()
 			clear(m.selected)
-			plans, err := scanPlans(m.dir)
+			plans, err := scanAllPlans(m.dir, m.cfg.ProjectPlanGlob)
 			if err == nil {
 				m.allPlans = plans
 				sortPlans(m.allPlans)
@@ -1771,10 +1805,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						continue
 					}
 					if p, ok := items[i].(plan); ok {
-						if _, wasCached := m.previewCache[p.file]; wasCached {
-							m.refreshing[p.file] = true
+						if _, wasCached := m.previewCache[p.path()]; wasCached {
+							m.refreshing[p.path()] = true
 						}
-						delete(m.previewCache, p.file)
+						delete(m.previewCache, p.path())
 					}
 				}
 				cmds = append(cmds, m.renderWindow())
@@ -1783,7 +1817,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Only show "Updated:" for files that still exist (not deleted).
 					planSet := make(map[string]bool)
 					for _, p := range plans {
-						planSet[p.file] = true
+						planSet[p.path()] = true
 					}
 					var changedFiles []string
 					for _, f := range msg.files {
@@ -1800,7 +1834,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmds = append(cmds, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
 							return changedSpinExpiredMsg{id: id}
 						}))
-						label := changedFiles[0]
+						label := filepath.Base(changedFiles[0])
 						if len(changedFiles) > 1 {
 							label = fmt.Sprintf("%d files", len(changedFiles))
 						}
@@ -1813,7 +1847,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.comment.active {
 			for _, f := range msg.files {
 				if f == m.comment.planFile {
-					cmds = append(cmds, loadCommentMode(m.dir, m.comment.planFile, m.glamourStyle, m.previewW()))
+					cmds = append(cmds, m.cmdLoadComment(m.comment.planFile))
 					break
 				}
 			}
@@ -1841,19 +1875,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case configUpdatedMsg:
 		clear(m.selected)
 		cfg := loadConfig()
+		oldGlob := m.cfg.ProjectPlanGlob
 		m.cfg = cfg
 		m.keys = newKeyMap(cfg)
-		if cfg.PlansDir != m.dir {
-			plans, err := scanPlans(cfg.PlansDir)
+		// Re-scan if plans dir or project glob changed
+		if cfg.PlansDir != m.dir || cfg.ProjectPlanGlob != oldGlob {
+			plans, err := scanAllPlans(cfg.PlansDir, cfg.ProjectPlanGlob)
 			if err == nil {
-				oldDir := m.dir
-				m.dir = cfg.PlansDir
+				// Update watcher for agent dir change
+				if cfg.PlansDir != m.dir {
+					oldDir := m.dir
+					m.dir = cfg.PlansDir
+					if m.watcher != nil {
+						_ = m.watcher.Remove(oldDir)
+						_ = m.watcher.Add(m.dir)
+					}
+				}
+				// Update watchers for project dirs
 				if m.watcher != nil {
-					_ = m.watcher.Remove(oldDir)
-					_ = m.watcher.Add(m.dir)
+					for _, d := range m.projectDirs {
+						_ = m.watcher.Remove(d)
+					}
+					m.projectDirs = resolveProjectDirs(cfg.ProjectPlanGlob)
+					for _, d := range m.projectDirs {
+						_ = m.watcher.Add(d)
+					}
 				}
 				m.allPlans = plans
 				sortPlans(m.allPlans)
+				m.store = diskStore{agentDir: m.dir, projectGlob: cfg.ProjectPlanGlob}
 				visible := filterPlans(plans, m.showDone, m.keepFiles(), m.labelFilter, m.installed)
 				m.list.SetItems(plansToItems(visible))
 				m.previewCache = make(map[string]string)
@@ -1959,6 +2009,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Update preview cache
 			m.previewCache[msg.file] = msg.rendered
+			// Re-evaluate comment icon in the plan list
+			m.syncHasComments(msg.file, bodyHasComments(msg.rawBody))
 		}
 		return m, nil
 
